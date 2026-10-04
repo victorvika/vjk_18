@@ -29,9 +29,13 @@ that fails one of the mandatory conditions is rejected with the exact reason.
 
 ## Install
 
-1. TradingView → *Pine Editor* → *Open* → *New indicator*.
-2. Paste the whole content of `pine/VJK18_ICT_Model.pine`.
-3. *Save* → *Add to chart*.
+1. **Get an exact copy of the file** — open the repo file and click **Raw**, then select all and copy:
+   `https://raw.githubusercontent.com/victorvika/vjk_18/arena/01a1080f-vjk-18/pine/VJK18_ICT_Model.pine`
+   (copying from a chat window can wrap or cut very long lines; the script is formatted so that no line exceeds 169
+   characters, but the Raw view is still the safest source.)
+2. TradingView → *Pine Editor* → *Open* → *New indicator*.
+3. Select everything in the editor, delete it, and paste the whole file.
+4. *Save* → *Add to chart*.
 4. Load `5M` (or `1M` / `15M`) and leave **HTF Resolution = Auto**: the script picks `1H` for a 5M chart,
    `4H` for a 15M chart and `15M` for a 1M chart, exactly like the reference model. Manual override is
    available, and a warning appears if the chosen HTF is less than ~4× the chart timeframe.
@@ -65,15 +69,15 @@ setup invalidated · setup rejected by the validation matrix.
 | Input | Default | Effect |
 |---|---|---|
 | HTF Resolution | Auto | 1M→15M, 5M→1H, 15M→4H, 1H→1D |
-| Sweep mode | Rejection Close | penetrates the level **and** closes back inside |
-| FVG mitigation rule | 50 % fill | an FVG is consumed once the HTF candle fills half of it |
+| Sweep mode | Rejection Close | penetrates the level **and** closes back inside (`Wick` / `Strict` also available) |
+| FVG mitigation rule | `50%` | an FVG is consumed once the HTF candle fills half of it (`Touch` / `Full` / `Close`) |
 | Sweep ↔ FVG relevance | required, ≤ 1 × HTF ATR | unrelated FVGs are rejected |
 | Displacement | body ≥ 1 × ATR | small breaks are never promoted to an MSS |
 | Maximum Sweep → MSS | 60 LTF bars | the MSS must be causally connected |
-| Entry zone priority | Breaker → Mitigation → FVG | |
-| Entry price | 50 % of the breaker zone | limit entry, touch fill |
+| Entry zone priority | `4 Chain` | Breaker → Mitigation → FVG, or force one, or require confluence |
+| Entry price | 50 % of the breaker zone | limit entry, `Touch` fill |
 | Stop loss | wider of sweep high / post-sweep swing + 0.25 × ATR | |
-| Targets | internal → external → HTF liquidity | |
+| Targets | internal → external → HTF liquidity | `Auto (I -> E -> HTF)` |
 | Minimum R:R | 2.0 | setups below it are rejected |
 | Active setups | max 1 BUY + 1 SELL | no chart spam |
 
@@ -85,8 +89,10 @@ setup invalidated · setup rejected by the validation matrix.
   is exposed as an **input**, documented in `docs/01 §1.7` and `docs/02`.
 * No Pine compiler is available outside TradingView, so `docs/05_PHASE6_7_COMPILE_REVIEW.md` §6.3 lists the
   handful of things to confirm on the first load (built-in signatures, `max_bars_back`, execution time on very
-  long histories). Everything the static analyzer can prove — brackets, indentation, undeclared identifiers,
-  argument counts for every function **and every type constructor**, field existence, function/global
-  declaration order, lookahead misuse, loops over empty arrays, object leaks — is verified and clean.
+  long histories). Everything the static analyzer can prove is verified and clean: 16 checks covering brackets,
+  indentation, undeclared identifiers, argument counts for every function **and every type constructor**, field
+  existence, function/global declaration order, lookahead misuse, loops over empty arrays, object leaks, typed
+  function declarations (CE10152), reserved-word names, namespace-as-type, line length, single-line statements,
+  duplicate declarations and input default/option consistency.
 * A permanent trading edge is not claimed. The value of this repository is a faithful, auditable and
   reproducible encoding of the model, plus the tooling to keep it that way.

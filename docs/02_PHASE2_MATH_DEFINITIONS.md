@@ -100,9 +100,9 @@ Mode behaviour (input 05):
 
 | Mode | Condition to mark `isSwept = true` |
 |---|---|
-| **Wick Sweep** | `touch` |
+| **Wick** | `touch` |
 | **Rejection Close** (default) | `touch` AND `C < level` (BSL) / `C > level` (SSL) |
-| **Strict Rejection** | the rejection close above **and** the *next* candle confirms: `C[1] < level` and (optionally) `H[1] ≤ sweepHigh` |
+| **Strict** | the rejection close above **and** the *next* candle confirms: `C[1] < level` and (optionally) `H[1] ≤ sweepHigh` |
 
 On a confirmed sweep the object records `sweptBar = bar_index` and `sweptPrice = H` (BSL) / `L` (SSL).
 `isSwept = true` is terminal: a level can never be swept twice, so a single liquidity pool produces at most
@@ -135,17 +135,17 @@ Fresh                → pen = 0
 Touched              → pen > 0
 Partially mitigated  → pen ≥ 0.5
 Fully mitigated      → pen ≥ 1
-Invalidated          → close through the zone (only reachable with the "Close through zone" rule)
+Invalidated          → close through the zone (only reachable with the "Close" rule)
 ```
 
 The FVG stops being usable (`mitigated = true`) when the selected rule triggers:
 
 | Rule | Bullish condition | Bearish condition |
 |---|---|---|
-| First touch | `HTF_L < top` | `HTF_H > bot` |
+| Touch | `HTF_L < top` | `HTF_H > bot` |
 | 50 % fill (default) | `HTF_L ≤ mid` | `HTF_H ≥ mid` |
-| Full fill | `HTF_L ≤ bot` | `HTF_H ≥ top` |
-| Close through zone | `HTF_C < bot` → **invalidated** | `HTF_C > top` → **invalidated** |
+| Full | `HTF_L ≤ bot` | `HTF_H ≥ top` |
+| Close | `HTF_C < bot` → **invalidated** | `HTF_C > top` → **invalidated** |
 
 **Relevance filter** (input 06) — an FVG only qualifies when at least one holds:
 
@@ -172,7 +172,7 @@ For a **SELL** setup, given the sweep bar `S` and sweep extreme `E`:
 4. displacement          :  maxBody(leg) ≥ i_dispATR × ATR  AND
                             ( i_dispConsec = 0  OR  consecutiveDirectional ≥ i_dispConsec )
                             leg = bars from bar(PH) to bar(event)
-                            "MSS break candle" mode measures only the break candle's body
+                            "Break candle" mode measures only the break candle's body
 5. causal window         :  bar(MSS) − S ≤ i_maxSweepMss  (60 LTF bars)
 6. failure guard         :  H > E + i_mssMaxExt × ATR  before the MSS ⇒ invalidate
                             ("price extended beyond the sweep extreme")
@@ -215,11 +215,11 @@ protected-swing rule as the breaker.
 
 ## 2.9 Entry zone selection and entry price
 
-Priority (input 10): `Breaker only`, `Mitigation only`, `FVG only`, **`Breaker → Mitigation → FVG`** (default),
-`Confluence required`.
+Priority (input 10): `1 Breaker`, `2 Mitigation`, `3 FVG`, **`4 Chain`** (default), `5 Confluence`.
+(Those are the exact strings shown in the *Entry zone priority* input.)
 
 ```
-Confluence required : zone = [ max(bot), min(top) ] of breaker ∩ FVG ; requires min(top) > max(bot)
+5 Confluence : zone = [ max(bot), min(top) ] of breaker ∩ FVG ; requires min(top) > max(bot)
 zone validation     : top > bot
                       near edge on the correct side of price:
                          sell :  near = zone.bot , dist = near − C > 0
@@ -233,13 +233,13 @@ Entry price (input 10/20):
 | Model | Sell | Buy |
 |---|---|---|
 | 50 % of zone (default) | `(top + bot)/2` | `(top + bot)/2` |
-| Open of zone candle | `O[candidate]` | `O[candidate]` |
+| Zone candle open | `O[candidate]` | `O[candidate]` |
 | FVG midpoint | `mid` of the setup's HTF FVG | idem |
-| Full zone (near edge) | `bot` | `top` |
+| Full zone | `bot` | `top` |
 | Custom % | `top − pct×(top−bot)` | `bot + pct×(top−bot)` |
 
-Trigger (input 10): **`Touch (limit fill)`** — a sell limit at `E` fills when `H ≥ E` (buy: `L ≤ E`), or
-`Close beyond entry` — `C ≥ E` (buy: `C ≤ E`). Fills can only occur **from the bar after the zone became
+Trigger (input 10): **`Touch`** — a sell limit at `E` fills when `H ≥ E` (buy: `L ≤ E`), or
+`Close beyond` — `C ≥ E` (buy: `C ≤ E`). Fills can only occur **from the bar after the zone became
 active**, so no intra-bar hindsight fill is ever assumed (the only exception is an explicitly enabled
 market entry, which fills at the close of the bar that created the zone).
 

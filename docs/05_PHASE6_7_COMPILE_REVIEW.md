@@ -7,7 +7,19 @@ There is no Pine compiler available in this repository, so the review was done w
 analyzer (`tools/pine_check.py`) plus a manual read-through of the whole file, plus the official Pine v6
 reference for every built-in call whose argument order cannot be checked locally.
 
-**Post-delivery fix (reported from the editor):** `string autoHtf(string tf) =>` → `autoHtf(string tf) =>`.
+**Post-delivery fix 2 (reported from the editor, CE10013):** the second error report pointed at an `if` line followed by a
+declaration line. Root cause: the paste was an *older draft*, and the file at that time contained lines up to **1 710
+characters** — exactly the kind of line that gets truncated or wrapped when it travels through a chat window or a mobile
+clipboard, which produces "Mismatching input … expecting set 'end of line without line continuation'".
+The whole script was therefore reformatted: **no line is longer than 169 characters**, every statement lives on a single
+physical line, no continuation lines exist at all, and checks 13-16 above were added so neither the length nor the
+continuation pattern can come back. The longest lines are now the `input.*` declarations (~170 chars), which are plain,
+ASCII, single-expression lines.
+
+The most reliable way to move the file into TradingView is to copy it from the repository's *Raw* view rather than from a
+chat window (GitHub → the file → **Raw** → select all → copy).
+
+**Post-delivery fix 1 (reported from the editor, CE10152):** `string autoHtf(string tf) =>` → `autoHtf(string tf) =>`.
 Pine has **no return-type annotation on user functions**; the leading type token makes the parser read the
 line as a method declaration, which produces `"string" is not a valid method keyword (CE10152)`. Two further
 hardening changes were applied at the same time: the `const int PH_*` constants became plain `int PH_*`
@@ -40,7 +52,11 @@ WARNINGS: none
 | 9 | no function body references a global declared *below* it | "Undeclared identifier" |
 | 10 | no leftover tokens after a constructor call | type errors |
 | 11 | no typed function declarations (`string f(x) =>` is the CE10152 error class) | "'string' is not a valid method keyword" |
-| 12 | no type field or variable named after a reserved word / built-in namespace (`label`, `line`, `box`, …) | "'x' is not a valid type keyword" |
+| 12 | no type field or variable named after a reserved word / built-in namespace, and no namespace used as a type (`extend x = …`) | "'x' is not a valid type keyword" |
+| 13 | no line longer than 190 characters (175 recommended) | copy/paste corruption, CE10013-style errors |
+| 14 | every statement is complete on one physical line (no continuation guessing) | "Mismatching input … expecting end of line without line continuation" |
+| 15 | no variable declared twice in the same local scope | "Variable 'x' already declared" |
+| 16 | every `input.string` default belongs to its own `options` list, and every `==` comparison uses one of those options | dead branches / inputs that silently do nothing |
 
 Additional structural guarantees checked manually across the file:
 
@@ -145,5 +161,5 @@ pipeline table walks `1 → 8` for at least one setup, and that every `INVALIDAT
 5. **Mitigation block definition.** Since the reference material shows the zone visually but does not define
    it mathematically, the "failing candle" definition from docs/02 §2.8 is used and is exposed through
    input group 09 (enable/disable, window, zone shape). Change it there, not in the code.
-6. **Confluence rule.** "Confluence required" intersects the breaker with the HTF FVG; if they do not overlap
+6. **Confluence rule.** The `5 Confluence` option intersects the breaker with the HTF FVG; if they do not overlap
    the setup is rejected with an explicit reason instead of silently falling back to one of them.

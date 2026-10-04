@@ -238,6 +238,12 @@ def main(path):
             TYPE_KEYWORDS = {"int", "float", "bool", "string", "color", "line", "label", "box",
                              "table", "array", "matrix", "map", "polyline", "linefill",
                              "series", "simple", "const", "var", "varip"}
+            NOT_A_TYPE = {"extend", "position", "size", "text", "xloc", "yloc", "shape",
+                          "location", "display", "format", "barmerge", "math", "str", "ta",
+                          "request", "syminfo", "barstate", "timeframe", "chart", "runtime",
+                          "session", "currency", "order", "font", "dayofweek"}
+            if vartype in NOT_A_TYPE:
+                err(n, f"'{vartype}' is a namespace, not a type - remove the type annotation for '{name}'")
             if vartype in RESERVED and vartype not in TYPE_KEYWORDS and vartype not in udt:
                 err(n, f"'{vartype}' is not a valid type keyword for '{name}'")
     declared = {}                  # global identifier -> line
@@ -263,6 +269,27 @@ def main(path):
                 cur_fun = None
         elif cur_fun:
             body_owner[ln] = cur_fun
+
+    # duplicate declarations inside the same local scope
+    scope_stack = []
+    for ln, code in logical:
+        st = code.strip()
+        if not st:
+            continue
+        ind = len(code) - len(code.lstrip(" "))
+        while scope_stack and ind <= scope_stack[-1][0]:
+            scope_stack.pop()
+        if ind == 0:
+            continue
+        m = re.match(r"(?:var\s+|varip\s+)?(?:float|int|bool|string|color|line|label|box|table|array<[^>]+>|matrix<[^>]+>|map<[^>]+>|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)", st)
+        if m:
+            name = m.group(1)
+            parent = scope_stack[-1][1] if scope_stack else set()
+            if name in parent:
+                err(ln, f"'{name}' is declared twice in the same local scope")
+            scope_stack.append((ind, (scope_stack[-1][1] if scope_stack else set()) | {name}))
+        elif scope_stack and ind > scope_stack[-1][0]:
+            scope_stack.append((ind, set(scope_stack[-1][1])))
 
     # global declarations and their line numbers (for use-before-declaration inside functions)
     global_decl_line = {}
@@ -292,6 +319,16 @@ def main(path):
                     err(ln, f"user function '{body_owner[ln]}' reassigns the global scalar '{m.group(1)}' (illegal in Pine)")
         indent = len(code) - len(code.lstrip(" "))
         stripped = code.strip()
+
+        # 1b. very long lines break copy/paste reliability and are hard to review
+        if len(code) > 190:
+            err(ln, f"line is {len(code)} characters long (limit 190)")
+        elif len(code) > 175:
+            warn(ln, f"line is {len(code)} characters long (recommended max 175)")
+
+        # 1c. every statement must live on ONE physical line (no continuation-line guessing)
+        if code.count("(") != code.count(")") and not code.rstrip().endswith(("(", ",", "+", "and", "or", "?", ":")):
+            err(ln, "statement appears to span multiple lines (unbalanced brackets on one line)")
 
         # 2. tabs
         if "\t" in code:
@@ -348,10 +385,12 @@ def main(path):
                 if got != want:
                     err(ln, f"{name}(): expected {want} args, found {got}")
             elif name in udt:
+                # UDT constructor arguments are optional (omitted fields keep their defaults),
+                # so fewer arguments are fine - only too many is an error.
                 want = len(udt[name])
                 got = len(args)
-                if got != want:
-                    err(ln, f"{name}.new(): expected {want} args, found {got}")
+                if got > want:
+                    err(ln, f"{name}.new(): {got} arguments for {want} fields")
             elif name.isupper() or name[0].isupper():
                 pass
             elif name not in BUILTIN_FUNCS and not re.search(r"\.\s*" + name + r"\s*\(", code):
@@ -378,7 +417,7 @@ def main(path):
                             break
                 i2 += 1
             args = [a for a in split_args(code[start + 1:i2]) if a.strip()]
-            if len(args) != len(udt[tname]):
+            if len(args) > len(udt[tname]):
                 err(ln, f"{tname}.new(): {len(args)} arguments for {len(udt[tname])} fields")
 
         # 5. member access on known object types

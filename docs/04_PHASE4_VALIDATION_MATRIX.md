@@ -15,7 +15,7 @@ condition, the exact test in the code and the rejection reason produced when it 
 | 6 | Bearish MSS (protected low broken) | YES | earliest logged internal CHoCH−/BOS− with `level ≤ protSwing` after `PH` | idem |
 | 7 | Displacement | YES (`i_dispATR ≥ 0`) | `maxBody(leg) ≥ i_dispATR × ATR`, optional consecutive candles | break skipped (`minMssBar = bar+1`), no MSS |
 | 8 | Sweep rejection guard | YES | `H ≤ sweepExt + i_mssMaxExt × ATR` until the MSS | `price extended beyond the sweep high by more than N ATR (sweep failed to reject)` |
-| 9 | Bearish Breaker / Mitigation / FVG zone | YES | `fFindBreaker` in `[bar(PH) … bar(MSS)−1]`, zone low above the protected low; mitigation = last down candle in `[sweep…MSS]`; FVG = setup FVG | `no valid Breaker only zone after the MSS`, `no valid Breaker -> Mitigation -> FVG zone after the MSS`, `Confluence required: breaker and HTF FVG do not overlap` |
+| 9 | Bearish Breaker / Mitigation / FVG zone | YES | `fFindBreaker` in `[bar(PH) … bar(MSS)−1]`, zone low above the protected low; mitigation = last down candle in `[sweep…MSS]`; FVG = setup FVG | `no valid zone for entry priority 1 Breaker`, `no valid zone for entry priority 4 Chain`, `Confluence required: breaker and HTF FVG do not overlap` |
 | 10 | Zone geometry | YES | `top > bot` | `invalid zone geometry` |
 | 11 | Valid retracement | YES | `zone.bot − close > 0` and `≤ i_brkMaxDist × ATR` | `price already beyond the entry zone (no valid retracement)`, `entry zone too far from price (> N ATR)` |
 | 12 | Valid SL | YES | reference = sweep high (or post-sweep swing / wider of both) + buffer, `SL > entry` | `invalid stop loss (below the sell entry)`, `stop-loss reference unavailable` |
