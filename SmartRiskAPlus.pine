@@ -36,7 +36,7 @@ string i_htfTF    = input.timeframe("60", "Higher timeframe", options=["15", "30
 int    i_swingLen = input.int(10, "Major swing length (HTF)", minval=2, maxval=50, group=G_HTF,
      tooltip="Fractal length that defines the major swing highs / lows a candle can sweep.")
 int    i_confirm  = input.int(2, "Sweep confirmation bars", minval=1, maxval=5, group=G_HTF,
-     tooltip="Candles after the sweep that must close back inside the range, without breaking the wick of the sweep candle, to validate the LS.")
+     tooltip="Candles that must confirm the sweep: the first one closes in the reversal direction, and every one of them closes back inside the range without breaking the wick of the sweep candle.")
 int    i_trendLen = input.int(200, "HTF trend EMA length", minval=1, group=G_HTF,
      tooltip="HTF close vs. this EMA decides whether a trade is with or against the trend (R:R choice).")
 
