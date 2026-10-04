@@ -133,15 +133,15 @@ def run(seed, N_HTF=4000):
         body = abs(c[i] - o[i])
         if stStage == 2:
             if stDir == 1:
-                if l[i] > h[i - 2]:
-                    zgTop, zgBot, zgBar = h[i - 2], h[i], i
+                if h[i] < l[i - 2]:
+                    zgTop, zgBot, zgBar = l[i - 2], h[i], i
                 if (zgTop is not None and zgBar is not None and i > zgBar and c[i] > zgTop
                         and l[i] <= zgBot and body >= DISP * atr[i] and c[i] > o[i]):
                     stStage, flipBar, ceLvl = 3, i, (zgTop + zgBot) / 2.0
                     stats['IFVG'] += 1
             else:
-                if h[i] < l[i - 2]:
-                    zgTop, zgBot, zgBar = l[i], l[i - 2], i
+                if l[i] > h[i - 2]:
+                    zgTop, zgBot, zgBar = l[i], h[i - 2], i
                 if (zgBot is not None and zgBar is not None and i > zgBar and c[i] < zgBot
                         and h[i] >= zgTop and body >= DISP * atr[i] and c[i] < o[i]):
                     stStage, flipBar, ceLvl = 3, i, (zgTop + zgBot) / 2.0
