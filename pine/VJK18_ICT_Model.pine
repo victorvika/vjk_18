@@ -1,0 +1,2160 @@
+//@version=6
+// =============================================================================================
+//  VJK-18  |  ICT EXTERNAL LIQUIDITY SWEEP -> HTF FVG -> LTF MSS -> BREAKER  (NON-REPAINTING)
+// =============================================================================================
+//  Causal chain implemented (mandatory, in order):
+//     EXTERNAL LIQUIDITY -> SWEEP -> HTF FVG -> LTF MSS -> BREAKER/MITIGATION ZONE
+//     -> LIMIT ENTRY -> SL beyond sweep/swing extreme -> TP at OPPOSING LIQUIDITY
+//
+//  Every mandatory condition is a hard gate (see "SIGNAL VALIDATION MATRIX" section below).
+//  If ANY mandatory component is missing the PRIMARY signal is NOT produced.
+//
+//  Repainting guarantees:
+//    * All pivots are CONFIRMED pivots (right-side bars must be closed).
+//    * All HTF data comes from request.security(..., lookahead = barmerge.lookahead_off)
+//      with a +1 offset, i.e. ONLY CLOSED HTF candles are ever used.
+//    * Every state transition and every signal is evaluated on a CLOSED chart bar.
+//    * Never uses request.security(..., lookahead_on) and never uses future offsets.
+// =============================================================================================
+
+indicator("VJK-18 ICT Model | Ext Liquidity Sweep -> HTF FVG -> LTF MSS -> Breaker", shorttitle = "VJK-18 ICT", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
+
+// =============================================================================================
+//  INPUT GROUPS
+// =============================================================================================
+string G01 = "01 - Timeframe Engine"
+string G02 = "02 - Major Market Structure"
+string G03 = "03 - Internal Market Structure"
+string G04 = "04 - External Liquidity"
+string G05 = "05 - Liquidity Sweep"
+string G06 = "06 - HTF Fair Value Gap"
+string G07 = "07 - LTF MSS"
+string G08 = "08 - Breaker Block"
+string G09 = "09 - Mitigation Block"
+string G10 = "10 - Entry Model"
+string G11 = "11 - Stop Loss"
+string G12 = "12 - Target Liquidity"
+string G13 = "13 - Risk / Reward"
+string G14 = "14 - Visual Settings"
+string G15 = "15 - Dashboard"
+string G16 = "16 - Alerts"
+string G17 = "17 - Debug"
+
+// --------------------------------------- 01 - TIMEFRAME ENGINE ------------------------------
+i_htfMode    = input.string("Auto (chart-TF based)", "HTF Resolution", options = ["Auto (chart-TF based)", "Manual"], group = G01, tooltip = "Auto follows the reference mapping: 1M chart -> 15M HTF, 5M chart -> 1H HTF, 15M chart -> 4H HTF (and equivalents for other entry timeframes). The HTF is analysed from REAL HTF candles via request.security().")
+i_htfManual  = input.timeframe("60", "Manual HTF", group = G01, tooltip = "Used when HTF Resolution = Manual. Must be at least two timeframe levels above the entry timeframe.")
+i_minHtfRatio= input.float(4.0, "Minimum HTF/LTF ratio before warning", minval = 1.0, step = 0.5, group = G01, tooltip = "Ratio of (HTF seconds / entry seconds) below which a warning is displayed. The reference model uses 12x-16x. Default 4.0 = roughly two timeframe levels.")
+i_showTfWarn = input.bool(true, "Show timeframe warning on chart", group = G01)
+i_htfDepth   = input.int(200, "HTF candle history depth", minval = 50, maxval = 500, group = G01, tooltip = "Number of CONFIRMED HTF candles kept in memory for HTF structure, HTF pivots and HTF FVG detection.")
+
+// --------------------------------------- 02 - MAJOR MARKET STRUCTURE ------------------------
+i_majLeft    = input.int(10, "LTF Major swing left bars", minval = 1, maxval = 100, group = G02)
+i_majRight   = input.int(10, "LTF Major swing right bars", minval = 1, maxval = 100, group = G02)
+i_htfMajLeft = input.int(3, "HTF Major swing left bars", minval = 1, maxval = 50, group = G02)
+i_htfMajRight= input.int(3, "HTF Major swing right bars", minval = 1, maxval = 50, group = G02)
+i_htfRangeLb = input.int(50, "HTF range-extreme lookback (HTF candles)", minval = 5, maxval = 500, group = G02, tooltip = "Highest high / lowest low of the last N confirmed HTF candles - registered as a MAJOR RANGE high / low (external liquidity).")
+i_showMajSw  = input.bool(false, "Show LTF major swings", group = G02)
+
+// --------------------------------------- 03 - INTERNAL MARKET STRUCTURE ---------------------
+i_intLeft    = input.int(3, "LTF Internal swing left bars", minval = 1, maxval = 50, group = G03)
+i_intRight   = input.int(3, "LTF Internal swing right bars", minval = 1, maxval = 50, group = G03)
+i_breakConf  = input.string("Close", "Break confirmation", options = ["Close", "Wick"], group = G03, tooltip = "How BOS / CHoCH / MSS breaks are confirmed. Default = Close (a closed candle must close beyond the level).")
+i_showIntSw  = input.bool(false, "Show LTF internal swings", group = G03)
+
+// --------------------------------------- 04 - EXTERNAL LIQUIDITY ----------------------------
+i_reqExternal= input.bool(true, "Primary setup requires EXTERNAL liquidity", group = G04, tooltip = "ON = the swept level must be a meaningful EXTERNAL level: HTF swing point, HTF range extreme or equal HTF highs/lows. OFF = LTF major swing levels are accepted as primary liquidity as well (lower quality, more signals).")
+i_ltfExtFall = input.bool(false, "Allow LTF major swings as external liquidity", group = G04, tooltip = "Fallback used when no HTF external level is available near price.")
+i_eqTol      = input.float(0.10, "Equal highs / lows tolerance (x HTF ATR)", minval = 0.0, maxval = 5.0, step = 0.05, group = G04, tooltip = "Two external levels closer than this tolerance are treated as ONE pool (equal highs / equal lows = double liquidity).")
+i_liqMaxAge  = input.int(500, "Maximum liquidity age (HTF candles, 0 = infinite)", minval = 0, maxval = 5000, group = G04)
+i_liqMaxN    = input.int(120, "Maximum liquidity levels tracked", minval = 20, maxval = 400, group = G04)
+i_showLiq    = input.bool(true, "Show external liquidity levels", group = G04)
+i_showLiqN   = input.int(3, "Levels drawn per side", minval = 1, maxval = 10, group = G04)
+
+// --------------------------------------- 05 - LIQUIDITY SWEEP -------------------------------
+i_sweepMode  = input.string("Rejection Close", "Sweep mode", options = ["Wick Sweep", "Rejection Close", "Strict Rejection"], group = G05, tooltip = "Wick Sweep = high/low penetrates the level. Rejection Close = penetrates and closes back inside. Strict Rejection = rejection close PLUS the following candle confirms rejection.")
+i_sweepTf    = input.string("LTF (chart)", "Sweep detection timeframe", options = ["LTF (chart)", "HTF (confirmed)"], group = G05, tooltip = "LTF = the sweep is detected on the entry timeframe (timely). HTF = the sweep is only accepted once a closed HTF candle has taken the level (slower, stricter).")
+i_sweepPen   = input.float(0.0, "Minimum penetration beyond level (x LTF ATR)", minval = 0.0, maxval = 5.0, step = 0.05, group = G05)
+i_strictNoNew= input.bool(true, "Strict Rejection: confirmation candle must not exceed the sweep extreme", group = G05)
+i_showSweep  = input.bool(true, "Show sweep markers", group = G05)
+i_defSweepAge= input.int(200, "Maximum wait for the sweep after identification (LTF bars)", minval = 10, maxval = 5000, group = G05)
+
+// --------------------------------------- 06 - HTF FAIR VALUE GAP ----------------------------
+i_fvgMinATR  = input.float(0.0, "Minimum FVG size (x HTF ATR, 0 = any)", minval = 0.0, maxval = 10.0, step = 0.05, group = G06)
+i_fvgRequire = input.bool(true, "Require sweep <-> FVG relevance", group = G06, tooltip = "The sweep must occur INTO or NEAR the relevant HTF FVG. Unrelated FVGs far from the liquidity event are rejected.")
+i_fvgDistMode= input.string("ATR", "Maximum sweep-to-FVG distance measured in", options = ["ATR", "Percent"], group = G06)
+i_fvgDistATR = input.float(1.0, "Maximum sweep-to-FVG distance (x HTF ATR)", minval = 0.05, maxval = 10.0, step = 0.05, group = G06)
+i_fvgDistPct = input.float(0.50, "Maximum sweep-to-FVG distance (percent)", minval = 0.01, maxval = 10.0, step = 0.01, group = G06)
+i_fvgMitRule = input.string("50% fill", "FVG mitigation rule (consumed when)", options = ["First touch", "50% fill", "Full fill", "Close through zone"], group = G06, tooltip = "Lifecycle: Fresh -> Touched -> Partially mitigated -> Fully mitigated -> Invalidated. The rule defines when the FVG is no longer usable.")
+i_fvgMaxN    = input.int(30, "Maximum FVGs tracked", minval = 5, maxval = 100, group = G06)
+i_fvgMaxBox  = input.int(8, "Maximum FVG boxes drawn", minval = 0, maxval = 30, group = G06)
+i_fvgLookback= input.int(60, "FVG search lookback (HTF candles)", minval = 5, maxval = 300, group = G06)
+i_allowSwFirst = input.bool(true, "Allow sweep-before-FVG sequence", group = G06, tooltip = "In live markets the sweep often happens before the third FVG candle closes. ON = the setup may start from the sweep and wait for the relevant FVG inside the discovery window. OFF = strict spec order (FVG must be active before the sweep).")
+i_swFirstWin = input.int(6, "Sweep -> FVG discovery window (HTF candles)", minval = 1, maxval = 50, group = G06)
+i_showFvg    = input.bool(true, "Show HTF FVG boxes", group = G06)
+
+// --------------------------------------- 07 - LTF MSS ---------------------------------------
+i_maxSweepMss= input.int(60, "Maximum Sweep -> MSS bars (LTF)", minval = 3, maxval = 1000, group = G07, tooltip = "Hard limit: MSS bar index must be greater than sweep bar index and within this many LTF bars.")
+i_mssRefMode = input.string("Last confirmed internal low", "MSS reference swing", options = ["Last confirmed internal low", "Lowest internal low (lookback)"], group = G07, tooltip = "The protected LTF swing that must be broken for the MSS.")
+i_mssRefLb   = input.int(30, "Reference swing lookback (LTF bars)", minval = 5, maxval = 300, group = G07)
+i_mssReqSwing= input.bool(true, "Require a post-sweep LTF swing before MSS", group = G07, tooltip = "A meaningful LTF high (sell model) / low (buy model) must be created AFTER the sweep and BEFORE the structure break.")
+i_dispSource = input.string("Leg (max body in leg)", "Displacement measured on", options = ["MSS break candle", "Leg (max body in leg)"], group = G07)
+i_dispATR    = input.float(1.0, "Displacement: body >= x ATR", minval = 0.0, maxval = 5.0, step = 0.05, group = G07)
+i_dispConsec = input.int(0, "Displacement: consecutive directional candles (0 = off)", minval = 0, maxval = 10, group = G07)
+i_mssMaxExt  = input.float(4.0, "Invalidate if price extends > x ATR beyond sweep extreme", minval = 0.5, maxval = 20.0, step = 0.5, group = G07)
+i_showMss    = input.bool(true, "Show MSS markers", group = G07)
+
+// --------------------------------------- 08 - BREAKER BLOCK --------------------------------
+i_brkLookback= input.int(20, "Breaker search lookback (LTF bars)", minval = 1, maxval = 100, group = G08)
+i_brkRange   = input.string("Full range (high-low)", "Breaker zone definition", options = ["Full range (high-low)", "Body (open-close)", "Wick to body"], group = G08)
+i_brkAbove   = input.bool(true, "Breaker must hold above the protected low", group = G08)
+i_brkPick    = input.string("Most recent", "Breaker candle selection", options = ["Most recent", "Highest traded"], group = G08, tooltip = "Most recent = the last opposite-colour candle before the displacement leg. Highest traded = the opposite-colour candle with the extreme high (sell) / low (buy) of the leg.")
+i_brkMaxDist = input.float(3.0, "Max breaker-to-price distance (x ATR)", minval = 0.5, maxval = 20.0, step = 0.5, group = G08)
+i_showBreaker= input.bool(true, "Show breaker block", group = G08)
+
+// --------------------------------------- 09 - MITIGATION BLOCK ------------------------------
+i_mitEnable  = input.bool(true, "Enable mitigation block engine", group = G09)
+i_mitIncSweep= input.bool(true, "Mitigation search may include the sweep candle", group = G09)
+i_mitRange   = input.string("Full range (high-low)", "Mitigation zone definition", options = ["Full range (high-low)", "Body (open-close)", "Wick to body"], group = G09)
+i_showMit    = input.bool(true, "Show mitigation block", group = G09)
+
+// --------------------------------------- 10 - ENTRY MODEL -----------------------------------
+i_zonePrio   = input.string("Breaker -> Mitigation -> FVG", "Entry zone priority", options = ["Breaker only", "Mitigation only", "FVG only", "Breaker -> Mitigation -> FVG", "Confluence required"], group = G10, tooltip = "Breaker -> Mitigation -> FVG picks the highest ranked valid zone. Confluence required = breaker and FVG must overlap, entry is taken in the overlap.")
+i_entryModel = input.string("50% of zone", "Entry price model", options = ["50% of zone", "Open of zone candle", "FVG midpoint", "Full zone (near edge)", "Custom % of zone"], group = G10)
+i_entryPct   = input.float(50.0, "Custom entry % into the zone", minval = 0.0, maxval = 100.0, step = 1.0, group = G10, tooltip = "0 = near edge (first touch), 100 = far edge (deepest fill).")
+i_entryTrig  = input.string("Touch (limit fill)", "Entry trigger", options = ["Touch (limit fill)", "Close beyond entry"], group = G10, tooltip = "LIMIT entry default: the order fills when price TRADES AT the entry price.")
+i_allowMkt   = input.bool(false, "Allow market entry if the zone is already violated", group = G10)
+i_onImmediate= input.string("Invalidate", "If price is already beyond the zone when it is created", options = ["Invalidate", "Market entry (if enabled)"], group = G10)
+i_maxRetrace = input.int(100, "Maximum retracement wait (LTF bars)", minval = 5, maxval = 1000, group = G10)
+i_showEntry  = input.bool(true, "Show entry zone", group = G10)
+i_maxBull    = input.int(1, "Maximum active BULLISH setups", minval = 1, maxval = 3, group = G10)
+i_maxBear    = input.int(1, "Maximum active BEARISH setups", minval = 1, maxval = 3, group = G10, tooltip = "Limits chart spam: by default only one active setup per direction is tracked. A setup slot is released as soon as the setup completes or is invalidated.")
+
+// --------------------------------------- 11 - STOP LOSS -------------------------------------
+i_slRef      = input.string("Wider of both", "Stop-loss reference", options = ["Sweep extreme", "Post-sweep swing (LTF)", "Wider of both"], group = G11)
+i_slBufMode  = input.string("ATR", "Stop-loss buffer", options = ["ATR", "Ticks", "Percent"], group = G11)
+i_slBufATR   = input.float(0.25, "Buffer (x LTF ATR)", minval = 0.0, maxval = 5.0, step = 0.05, group = G11)
+i_slBufTicks = input.int(10, "Buffer (ticks)", minval = 0, maxval = 1000, group = G11)
+i_slBufPct   = input.float(0.05, "Buffer (percent)", minval = 0.0, maxval = 5.0, step = 0.01, group = G11)
+i_showTrade  = input.bool(true, "Show entry / SL / TP levels", group = G11)
+
+// --------------------------------------- 12 - TARGET LIQUIDITY ------------------------------
+i_tp1Tier    = input.string("Auto (Internal -> External -> HTF)", "TP1 target hierarchy", options = ["Auto (Internal -> External -> HTF)", "Internal (LTF)", "External (LTF major)", "HTF external"], group = G12)
+i_tp2Mode    = input.string("Next nearest", "TP2", options = ["Next nearest", "Next tier up", "None"], group = G12)
+i_tpMinDist  = input.float(0.5, "Minimum TP distance (x ATR)", minval = 0.0, maxval = 10.0, step = 0.1, group = G12)
+i_tpSkipSwpt = input.bool(true, "Ignore already swept liquidity as target", group = G12)
+i_reqTp      = input.bool(true, "Require opposing liquidity target", group = G12)
+i_showTgt    = input.bool(true, "Show target liquidity labels", group = G12)
+
+// --------------------------------------- 13 - RISK / REWARD ---------------------------------
+i_minRR      = input.float(2.0, "Minimum R:R", minval = 0.0, maxval = 50.0, step = 0.1, group = G13)
+i_rrTarget   = input.string("TP1", "Apply minimum R:R to", options = ["TP1", "TP2", "Best available"], group = G13)
+i_reqRR      = input.bool(true, "Reject setups below the minimum R:R", group = G13)
+
+// --------------------------------------- 14 - VISUAL SETTINGS -------------------------------
+i_cBull      = input.color(#26a69a, "Bullish / demand", group = G14)
+i_cBear      = input.color(#ef5350, "Bearish / supply", group = G14)
+i_cNeutral   = input.color(#787b86, "Neutral", group = G14)
+i_cEntry     = input.color(#2962ff, "Entry / limit", group = G14)
+i_cSL        = input.color(#f23645, "Stop loss", group = G14)
+i_cTP        = input.color(#089981, "Take profit", group = G14)
+i_cLiq       = input.color(#ffeb3b, "Liquidity levels", group = G14)
+i_lblSize    = input.string("small", "Label size", options = ["tiny", "small", "normal"], group = G14)
+i_keepDone   = input.int(2, "Finished setups kept per direction", minval = 0, maxval = 5, group = G14, tooltip = "0 = finished setups are removed from the chart as soon as they end.")
+i_maxZones   = input.int(12, "Maximum zone boxes on chart", minval = 4, maxval = 40, group = G14)
+i_extendR    = input.bool(true, "Extend active zone boxes to the right", group = G14)
+i_bgTint     = input.bool(false, "Background tint while a setup is active", group = G14)
+
+// --------------------------------------- 15 - DASHBOARD -------------------------------------
+i_showDash   = input.bool(true, "Show dashboard", group = G15)
+i_dashPos    = input.string("Top right", "Dashboard position", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right"], group = G15)
+i_dashSize   = input.string("Small", "Dashboard size", options = ["Tiny", "Small", "Normal"], group = G15)
+
+// --------------------------------------- 16 - ALERTS ----------------------------------------
+i_alLiq     = input.bool(true, "External liquidity identified", group = G16)
+i_alSweep   = input.bool(true, "Buy-side / sell-side liquidity sweep", group = G16)
+i_alFvg     = input.bool(true, "HTF FVG confirmed", group = G16)
+i_alMss     = input.bool(true, "Bullish / bearish MSS", group = G16)
+i_alBreaker = input.bool(true, "Bullish / bearish breaker created", group = G16)
+i_alLimit   = input.bool(true, "BUY / SELL LIMIT activated", group = G16)
+i_alEntry   = input.bool(true, "Entry triggered", group = G16)
+i_alSl      = input.bool(true, "Stop loss hit", group = G16)
+i_alTp      = input.bool(true, "TP1 / TP2 hit", group = G16)
+i_alInvalid = input.bool(true, "Setup invalidated", group = G16)
+i_alRisk    = input.bool(true, "Setup rejected by the validation matrix", group = G16)
+
+// --------------------------------------- 17 - DEBUG -----------------------------------------
+i_debug      = input.bool(false, "Debug Mode", group = G17, tooltip = "Shows the internal decision process: 1. External Liquidity Found ... 8. Entry Triggered, or INVALIDATED: reason.")
+i_debugTable = input.bool(true, "Show decision pipeline table", group = G17)
+i_debugSteps = input.bool(true, "Show step labels on chart", group = G17)
+i_debugMaxLbl= input.int(10, "Maximum step labels per setup", minval = 4, maxval = 24, group = G17)
+i_debugLogN  = input.int(8, "Event log rows", minval = 3, maxval = 20, group = G17)
+
+// =============================================================================================
+//  TYPES  (object lifecycle managed via rolling arrays, every object has a unique id)
+// =============================================================================================
+type Liq
+    float  price      = na
+    int    dir        = 0
+    string kind       = ""
+    int    htfBarTime = 0
+    bool   isSwept    = false
+    int    sweptBar   = 0
+    float  sweptPrice = na
+    bool   pend       = false
+    int    pendBar    = 0
+    float  pendExt    = na
+    bool   stale      = false
+    int    equalN     = 1
+    line   ln         = na
+    label  lb         = na
+
+type Fvg
+    float  top        = na
+    float  bot        = na
+    float  mid        = na
+    int    dir        = 0
+    int    htfBarTime = 0
+    bool   mitigated  = false
+    bool   invalid    = false
+    int    pairedIdx  = -1
+    float  pen        = 0.0      // maximum penetration into the zone (0 fresh .. 1 fully filled)
+    string lcState    = "Fresh"  // Fresh | Touched | Partially mitigated | Fully mitigated | Invalidated
+    box    bx         = na       // HTF FVG box on the chart
+    label  lb         = na       // HTF FVG label
+
+type Sw
+    float  price      = na
+    int    bar        = 0
+    int    dir        = 0
+    string label      = ""
+
+// =============================================================================================
+//  01 - TIMEFRAME ENGINE   (HTF is always analysed from REAL HTF candles)
+// =============================================================================================
+string autoHtf(string tf) =>
+    switch tf
+        "1S"  => "15S"
+        "5S"  => "1"
+        "15S" => "5"
+        "30S" => "5"
+        "1"   => "15"
+        "2"   => "30"
+        "3"   => "30"
+        "5"   => "60"
+        "10"  => "120"
+        "15"  => "240"
+        "30"  => "240"
+        "45"  => "1D"
+        "60"  => "1D"
+        "120" => "1D"
+        "180" => "1D"
+        "240" => "1D"
+        "1D"  => "1W"
+        "1W"  => "1M"
+        "1M"  => "3M"
+        => "12M"
+
+bool   htfResolved = i_htfMode == "Auto (chart-TF based)"
+string htfTf       = htfResolved ? autoHtf(timeframe.period) : i_htfManual
+float  ltfSec      = timeframe.in_seconds(timeframe.period)
+float  htfSec      = timeframe.in_seconds(htfTf)
+float  tfRatio     = ltfSec > 0 ? htfSec / ltfSec : 1.0
+bool   tfTooClose  = tfRatio < i_minHtfRatio
+string tfWarnTxt   = "WARNING: HTF (" + htfTf + ") is not sufficiently higher than the entry timeframe (" + timeframe.period + "). Ratio = " + str.tostring(tfRatio, "#.##") + "x (minimum " + str.tostring(i_minHtfRatio, "#.##") + "x). The reference model uses 1H->5M, 4H->15M, 15M->1M (12x-16x)."
+
+// =============================================================================================
+//  HTF DATA (CLOSED HTF CANDLES ONLY - no lookahead, no reconstruction from LTF data)
+// =============================================================================================
+[htfH, htfL, htfO, htfC, htfT] = request.security(syminfo.tickerid, htfTf, [high[1], low[1], open[1], close[1], time[1]], barmerge.gaps_off, barmerge.lookahead_off)
+
+var int   htfN      = 0          // sequential index of the last CLOSED HTF candle
+var bool  htfNew    = false      // a new closed HTF candle just became available
+var float htfPrevC  = na
+var float htfAtr    = na
+int       htfAtrLen = 14
+
+if htfT != nz(htfT[1], htfT)
+    htfNew := true
+else
+    htfNew := false
+
+if htfNew and barstate.isconfirmed
+    htfN     := htfN + 1
+    float tr  = na(htfPrevC) ? htfH - htfL : math.max(htfH - htfL, math.max(math.abs(htfH - htfPrevC), math.abs(htfL - htfPrevC)))
+    htfAtr   := na(htfAtr) ? tr : (htfAtr * (htfAtrLen - 1) + tr) / htfAtrLen
+    htfPrevC := htfC
+
+// =============================================================================================
+//  ATR / TICK HELPERS
+// =============================================================================================
+float atr        = ta.atr(14)
+float aSafe      = na(atr) or atr <= 0 ? syminfo.mintick * 10 : atr
+float tickSz     = syminfo.mintick
+float htfAtrSafe = na(htfAtr) ? aSafe : htfAtr
+
+// =============================================================================================
+//  GLOBAL EVENT LOG
+// =============================================================================================
+var array<string> logMsg = array.new<string>()
+var array<int>    logBar = array.new<int>()
+
+pushLog(string s) =>
+    logMsg.push(s)
+    logBar.push(bar_index)
+    if logMsg.size() > 200
+        logMsg.shift()
+        logBar.shift()
+
+// =============================================================================================
+//  OBJECT COLLECTIONS (bounded - arrays are rolled, chart objects are recycled)
+// =============================================================================================
+var array<Liq>  liqLst   = array.new<Liq>()
+var array<Fvg>  fvgLst   = array.new<Fvg>()
+var array<Sw>   majHiLst = array.new<Sw>()
+var array<Sw>   majLoLst = array.new<Sw>()
+var array<Sw>   intHiLst = array.new<Sw>()
+var array<Sw>   intLoLst = array.new<Sw>()
+
+var array<float> htfHArr = array.new<float>()      // rolling closed HTF highs
+var array<float> htfLArr = array.new<float>()      // rolling closed HTF lows
+var array<int>   htfTArr = array.new<int>()        // rolling closed HTF bar times
+var array<int>   htfSrcArr = array.new<int>()      // source liquidity index for that HTF bar (-1 = none)
+
+// rolling push helpers ------------------------------------------------------------------------
+// When the oldest liquidity object is dropped, every stored reference to a liquidity index
+// is decremented so that object identity/links stay valid (no stale references).
+pushLiq(Liq v) =>
+    liqLst.push(v)
+    if liqLst.size() > i_liqMaxN
+        Liq gone = liqLst.shift()
+        if not na(gone.ln)
+            line.delete(gone.ln)
+            gone.ln := na
+        if not na(gone.lb)
+            label.delete(gone.lb)
+            gone.lb := na
+        if htfSrcArr.size() > 0
+            for i = 0 to htfSrcArr.size() - 1
+                if htfSrcArr.get(i) >= 0
+                    htfSrcArr.set(i, htfSrcArr.get(i) - 1)
+        if fvgLst.size() > 0
+            for i = 0 to fvgLst.size() - 1
+                Fvg f = fvgLst.get(i)
+                if f.pairedIdx >= 0
+                    f.pairedIdx := f.pairedIdx - 1
+                    fvgLst.set(i, f)
+
+pushFvg(Fvg v) =>
+    fvgLst.push(v)
+    if fvgLst.size() > i_fvgMaxN
+        Fvg gone = fvgLst.shift()
+        if not na(gone.bx)
+            box.delete(gone.bx)
+            gone.bx := na
+        if not na(gone.lb)
+            label.delete(gone.lb)
+            gone.lb := na
+        if fvgLst.size() > 0
+            for i = 0 to fvgLst.size() - 1
+                Fvg f = fvgLst.get(i)
+                if f.pairedIdx >= 0
+                    f.pairedIdx := f.pairedIdx - 1
+                    fvgLst.set(i, f)
+
+pushSw(array<Sw> a, Sw v, int maxN) =>
+    a.push(v)
+    if a.size() > maxN
+        a.shift()
+
+pushHtf(float h, float l, int t, int src) =>
+    htfHArr.push(h)
+    htfLArr.push(l)
+    htfTArr.push(t)
+    htfSrcArr.push(src)
+    if htfHArr.size() > i_htfDepth
+        htfHArr.shift()
+        htfLArr.shift()
+        htfTArr.shift()
+        htfSrcArr.shift()
+
+
+
+fSideWord(int side) =>
+    side == 1 ? "BUY" : "SELL"
+
+
+fSideColor(int side) =>
+    side == 1 ? i_cBull : i_cBear
+
+
+fLblSize() =>
+    i_lblSize == "tiny" ? size.tiny : i_lblSize == "small" ? size.small : size.normal
+
+
+fPx(float v) =>
+    na(v) ? "-" : str.tostring(v, format.mintick)
+
+
+fShort(string t, int n) =>
+    str.length(t) <= n ? t : str.substring(t, 0, n)
+
+
+var array<string> evMsgs = array.new<string>()
+var array<string> evKinds = array.new<string>()
+
+fire(string kind, string msg) =>
+    evKinds.push(kind)
+    evMsgs.push(msg)
+
+
+fFreezeFvgBox(Fvg f) =>
+    if not na(f.bx)
+        box.set_extend(f.bx, extend.none)
+        box.set_right(f.bx, bar_index)
+        box.set_bgcolor(f.bx, color.new(color.gray, 90))
+        box.set_border_color(f.bx, color.new(color.gray, 60))
+    if not na(f.lb)
+        label.delete(f.lb)
+        f.lb := na
+
+
+fDrawFvgBox(Fvg f, string txt) =>
+    if i_showFvg and i_fvgMaxBox > 0
+        int drawn      = 0
+        int oldestIdx  = -1
+        int oldestTime = 0
+        if fvgLst.size() > 0
+            for i = 0 to fvgLst.size() - 1
+                Fvg o = fvgLst.get(i)
+                if not na(o.bx)
+                    drawn := drawn + 1
+                    if oldestIdx < 0 or o.htfBarTime < oldestTime
+                        oldestIdx  := i
+                        oldestTime := o.htfBarTime
+        if drawn >= i_fvgMaxBox and oldestIdx >= 0
+            Fvg old = fvgLst.get(oldestIdx)
+            if not na(old.bx)
+                box.delete(old.bx)
+                old.bx := na
+            if not na(old.lb)
+                label.delete(old.lb)
+                old.lb := na
+        color c = f.dir == 1 ? i_cBull : i_cBear
+        f.bx := box.new(bar_index, f.top, bar_index + 10, f.bot, border_color = color.new(c, 40), border_width = 1, bgcolor = color.new(c, 88), extend = i_extendR ? extend.right : extend.none)
+        f.lb := label.new(bar_index, f.dir == 1 ? f.bot : f.top, txt, xloc.bar_index, yloc.price, color.new(color.black, 100), f.dir == 1 ? label.style_label_up : label.style_label_down, c, size.tiny)
+
+
+// =============================================================================================
+//  02 - STRUCTURE ENGINE (shared math for LTF major / LTF internal / HTF)
+//  Returns [newState, event, highBroken, lowBroken, brokenLevel]
+//  event:  1 = bullish CHoCH, 2 = bullish BOS, -1 = bearish CHoCH, -2 = bearish BOS, 0 = none
+//  state:  1 = bullish, -1 = bearish, 0 = neutral (undetermined)
+// =============================================================================================
+fStruct(int state, bool hb, bool lb, float lastH, float lastL, bool brkH, bool brkL) =>
+    int   ns  = state
+    int   ev  = 0
+    bool  nhb = hb
+    bool  nlb = lb
+    float bp  = na
+    if brkH and not hb and not na(lastH)
+        ev  := state == 1 ? 2 : 1
+        ns  := 1
+        nhb := true
+        bp  := lastH
+    if brkL and not lb and not na(lastL)
+        ev  := state == -1 ? -2 : -1
+        ns  := -1
+        nlb := true
+        bp  := lastL
+    [ns, ev, nhb, nlb, bp]
+
+// ---------------------------------------------------------------------------------------------
+//  LTF MAJOR STRUCTURE  (external liquidity / invalidation / major targets)
+// ---------------------------------------------------------------------------------------------
+var int   majState  = 0
+var float majLastH  = na
+var float majLastL  = na
+var bool  majHb     = false
+var bool  majLb     = false
+
+float majPivH = ta.pivothigh(high, i_majLeft, i_majRight)
+float majPivL = ta.pivotlow(low, i_majLeft, i_majRight)
+int   majPivHBar = bar_index - i_majRight
+int   majPivLBar = bar_index - i_majRight
+
+// ---------------------------------------------------------------------------------------------
+//  LTF INTERNAL STRUCTURE  (MSS / displacement / entry)
+// ---------------------------------------------------------------------------------------------
+var int   intState = 0
+var float intLastH = na
+var float intLastL = na
+var bool  intHb    = false
+var bool  intLb    = false
+
+float intPivH = ta.pivothigh(high, i_intLeft, i_intRight)
+float intPivL = ta.pivotlow(low, i_intLeft, i_intRight)
+int   intPivHBar = bar_index - i_intRight
+int   intPivLBar = bar_index - i_intRight
+
+// internal structure break event log (used by the retrospective MSS scanner)
+var array<int>   evBar   = array.new<int>()
+var array<int>   evType  = array.new<int>()
+var array<float> evLevel = array.new<float>()
+
+// ---------------------------------------------------------------------------------------------
+//  HTF STRUCTURE  (from real, closed HTF candles)
+// ---------------------------------------------------------------------------------------------
+var int   htfState = 0
+var float htfLastH = na
+var float htfLastL = na
+var bool  htfHb    = false
+var bool  htfLb    = false
+var int   htfLastPivTime = 0
+var float lastRangeHigh  = na
+var float lastRangeLow   = na
+
+// ---------------------------------------------------------------------------------------------
+//  HTF PIVOT + STRUCTURE + RANGE EXTREME PROCESSING  (runs only when a HTF candle closes)
+// ---------------------------------------------------------------------------------------------
+//   side = 1 : buy-side liquidity (above price), side = -1 : sell-side liquidity (below price)
+//
+//   A level qualifies as EXTERNAL LIQUIDITY when:
+//     * it is a confirmed HTF swing point, an HTF range extreme, or (fallback) an LTF major swing
+//     * it has NOT already been traded through after it formed
+//     * it is not stale (optional maximum age)
+//   Levels that were already traded through before the indicator could know about them are stored
+//   with isSwept = true so they can never produce a sweep event (no hindsight sweeps).
+fRegisterLiq(float price, int side, string kind, int htfTime, int minAbsIdx) =>
+    float tol    = i_eqTol * htfAtrSafe
+    int   base   = htfN - (htfHArr.size() - 1)
+    bool  merged = false
+    // ---- merge with an existing level -> equal highs / equal lows = one pool of liquidity
+    if liqLst.size() > 0
+        for i = 0 to liqLst.size() - 1
+            Liq q = liqLst.get(i)
+            if not merged and not q.stale and not q.isSwept and q.dir == side and math.abs(q.price - price) <= tol
+                q.price  := side == 1 ? math.max(q.price, price) : math.min(q.price, price)
+                q.equalN := q.equalN + 1
+                q.kind   := "Equal " + (side == 1 ? "Highs" : "Lows")
+                merged   := true
+    // ---- was the level already traded through AFTER it formed? -> historical, not tradeable
+    bool  taken = false
+    float ext   = na
+    int   from  = math.max(minAbsIdx + 1 - base, 0)
+    if from <= htfHArr.size() - 1
+        for i = from to htfHArr.size() - 1
+            if side == 1 and htfHArr.get(i) > price + tickSz
+                taken := true
+                ext   := na(ext) ? htfHArr.get(i) : math.max(ext, htfHArr.get(i))
+            if side == -1 and htfLArr.get(i) < price - tickSz
+                taken := true
+                ext   := na(ext) ? htfLArr.get(i) : math.min(ext, htfLArr.get(i))
+    if not merged and not taken
+        Liq nl = Liq.new(price, side, kind, htfTime, false, 0, na, false, 0, na, false, 1, na, na)
+        if i_showLiq and liqLst.size() > 0
+            // keep at most i_showLiqN drawn levels per side (newest win, bounded chart objects)
+            int drawn = 0
+            int oldestIdx = -1
+            int oldestTime = 0
+            for i = 0 to liqLst.size() - 1
+                Liq q = liqLst.get(i)
+                if q.dir == side and not na(q.ln)
+                    drawn := drawn + 1
+                    if oldestIdx < 0 or q.htfBarTime < oldestTime
+                        oldestIdx  := i
+                        oldestTime := q.htfBarTime
+            if drawn >= i_showLiqN and oldestIdx >= 0
+                Liq old = liqLst.get(oldestIdx)
+                if not na(old.ln)
+                    line.delete(old.ln)
+                    old.ln := na
+                if not na(old.lb)
+                    label.delete(old.lb)
+                    old.lb := na
+        if i_showLiq
+            string tag = str.startswith(kind, "HTF Swing") ? "PIV" : str.startswith(kind, "HTF Range") ? "RNG" : "LTF"
+            nl.ln := line.new(bar_index, price, bar_index + 5, price, xloc.bar_index, extend.right, i_cLiq, line.style_dotted, 1)
+            nl.lb := label.new(bar_index + 5, price, (side == 1 ? "BSL " : "SSL ") + tag, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, i_cLiq, size.tiny)
+        pushLiq(nl)
+    if not merged and taken
+        Liq nl = Liq.new(price, side, "Taken " + (side == 1 ? "High" : "Low") + " (historical)", htfTime, true, 0, ext, false, 0, na, false, 1, na, na)
+        pushLiq(nl)
+
+// stale level management: levels older than the configured age stop being active magnets
+fExpireLiq() =>
+    if i_liqMaxAge > 0
+        float maxAge = i_liqMaxAge * htfSec * 1000.0
+        if liqLst.size() > 0
+            for i = 0 to liqLst.size() - 1
+                Liq q = liqLst.get(i)
+                if not q.stale and not q.isSwept and q.htfBarTime > 0 and (time - q.htfBarTime) > maxAge
+                    q.stale := true
+                    if not na(q.lb)
+                        label.delete(q.lb)
+                        q.lb := na
+                    if not na(q.ln)
+                        line.delete(q.ln)
+                        q.ln := na
+
+// ---------------------------------------------------------------------------------------------
+//  HTF FVG ENGINE  (true three-candle imbalance on CLOSED HTF candles)
+// ---------------------------------------------------------------------------------------------
+fDetectHtfFvg() =>
+    int n = htfHArr.size() - 1
+    if n >= 2
+        float h0 = htfHArr.get(n - 2)
+        float l0 = htfLArr.get(n - 2)
+        float h2 = htfHArr.get(n)
+        float l2 = htfLArr.get(n)
+        int   t2 = htfTArr.get(n)
+        // bullish FVG : low of current candle > high of candle[2]
+        if l2 > h0 and (l2 - h0) >= i_fvgMinATR * htfAtrSafe
+            int src = -1
+            src := htfSrcArr.get(n - 2) >= 0 ? htfSrcArr.get(n - 2) : src
+            src := htfSrcArr.get(n - 1) >= 0 ? htfSrcArr.get(n - 1) : src
+            src := htfSrcArr.get(n)     >= 0 ? htfSrcArr.get(n)     : src
+            Fvg nf = Fvg.new(l2, h0, (l2 + h0) / 2, 1, t2, false, false, src, 0.0, "Fresh", na, na)
+            fDrawFvgBox(nf, "HTF FVG (bull)")
+            pushFvg(nf)
+            fire("fvg_bull", str.format("{0} | HTF BULLISH FVG confirmed | Zone {1} - {2} | HTF {3} | LTF {4}", syminfo.ticker, str.tostring(h0, format.mintick), str.tostring(l2, format.mintick), htfTf, timeframe.period))
+            pushLog("2. HTF FVG Found (bullish) " + str.tostring(h0, format.mintick) + " - " + str.tostring(l2, format.mintick))
+        // bearish FVG : high of current candle < low of candle[2]
+        if h2 < l0 and (l0 - h2) >= i_fvgMinATR * htfAtrSafe
+            int src = -1
+            src := htfSrcArr.get(n - 2) >= 0 ? htfSrcArr.get(n - 2) : src
+            src := htfSrcArr.get(n - 1) >= 0 ? htfSrcArr.get(n - 1) : src
+            src := htfSrcArr.get(n)     >= 0 ? htfSrcArr.get(n)     : src
+            Fvg nf = Fvg.new(l0, h2, (l0 + h2) / 2, -1, t2, false, false, src, 0.0, "Fresh", na, na)
+            fDrawFvgBox(nf, "HTF FVG (bear)")
+            pushFvg(nf)
+            fire("fvg_bear", str.format("{0} | HTF BEARISH FVG confirmed | Zone {1} - {2} | HTF {3} | LTF {4}", syminfo.ticker, str.tostring(h2, format.mintick), str.tostring(l0, format.mintick), htfTf, timeframe.period))
+            pushLog("2. HTF FVG Found (bearish) " + str.tostring(h2, format.mintick) + " - " + str.tostring(l0, format.mintick))
+
+//  FVG chart object (bounded to i_fvgMaxBox boxes - the oldest is released first)
+// ---------------------------------------------------------------------------------------------
+//  FVG LIFECYCLE  (evaluated on CLOSED HTF candles only -> no repaint)
+//  Fresh -> Touched -> Partially mitigated -> Fully mitigated -> Invalidated
+// ---------------------------------------------------------------------------------------------
+fUpdateFvgLifecycle(int curHtfTime) =>
+    if fvgLst.size() > 0
+        for i = 0 to fvgLst.size() - 1
+            Fvg f = fvgLst.get(i)
+            if not f.mitigated and not f.invalid and f.htfBarTime != curHtfTime
+                bool  consumed = false
+                bool  failed   = false
+                float h        = f.top - f.bot
+                if f.dir == 1
+                    f.pen := math.max(f.pen, h > 0 ? (f.top - htfL) / h : 0.0)
+                    if i_fvgMitRule == "First touch"
+                        consumed := htfL < f.top
+                    else if i_fvgMitRule == "50% fill"
+                        consumed := htfL <= f.mid
+                    else if i_fvgMitRule == "Full fill"
+                        consumed := htfL <= f.bot
+                    else
+                        failed := htfC < f.bot
+                else
+                    f.pen := math.max(f.pen, h > 0 ? (htfH - f.bot) / h : 0.0)
+                    if i_fvgMitRule == "First touch"
+                        consumed := htfH > f.bot
+                    else if i_fvgMitRule == "50% fill"
+                        consumed := htfH >= f.mid
+                    else if i_fvgMitRule == "Full fill"
+                        consumed := htfH >= f.top
+                    else
+                        failed := htfC > f.top
+                if failed
+                    f.invalid   := true
+                    f.mitigated := true
+                    f.lcState   := "Invalidated"
+                    fFreezeFvgBox(f)
+                else if consumed
+                    f.mitigated := true
+                    f.lcState   := f.pen >= 1.0 ? "Fully mitigated" : f.pen >= 0.5 ? "Partially mitigated" : "Touched"
+                    fFreezeFvgBox(f)
+                else if f.pen >= 1.0
+                    f.lcState := "Fully mitigated"
+                else if f.pen >= 0.5
+                    f.lcState := "Partially mitigated"
+                else if f.pen > 0.0
+                    f.lcState := "Touched"
+
+// =============================================================================================
+//  SETUP OBJECT  (one full causal chain : Liquidity -> Sweep -> FVG -> MSS -> Breaker -> Entry)
+//  A setup is an OBJECT with its own lifecycle, so several setups can coexist and every
+//  signal stays traceable from liquidity to target.
+// =============================================================================================
+type Setup
+    int    id        = 0
+    int    side      = 0        //  1 = buy model, -1 = sell model
+    int    phase     = 0        //  see PHASES table below
+    int    bornBar   = 0        // bar index at creation (age limits)
+    int    zoneSetBar= 0        // bar index at which the entry zone became active
+    int    minMssBar = 0        // earliest MSS break bar still acceptable (displacement retry)
+    float  liqPrice  = na
+    int    liqTime   = 0
+    string liqKind   = ""
+    int    sweepBar  = 0
+    float  sweepExt  = na
+    int    sweepTime  = 0
+    float  fvgTop    = na
+    float  fvgBot    = na
+    float  fvgMid    = na
+    int    fvgTime   = 0
+    bool   fvgLinked  = false
+    int    mssBar    = 0
+    float  mssLevel  = na
+    float  swingPost = na       // post-sweep LTF swing (high for sells / low for buys)
+    int    swingPostBar = 0
+    float  protSwing = na       // protected LTF swing that broke
+    string zoneSrc   = ""
+    float  zoneTop   = na
+    float  zoneBot   = na
+    int    zoneBar   = 0
+    float  entry     = na
+    float  sl        = na
+    float  tp1       = na
+    float  tp2       = na
+    float  rr        = na
+    bool   armed     = false
+    bool   mktEntry  = false
+    bool   entered   = false
+    int    entryBar  = 0
+    string outcome   = ""
+    string reject    = ""
+    int    progress  = 0
+    int    stepN     = 0
+    array<label> steps   = na
+    array<line>  tlines  = na
+    box    zoneBox   = na
+    box    brkBox    = na
+    box    mitBox    = na
+    line   maxLine   = na
+
+// PHASES
+// 0 IDLE | 1 FIND_LIQUIDITY | 2 LIQ_IDENTIFIED | 3 HTF_FVG_ACTIVE | 4 SWEPT
+// 5 MSS_CONFIRMED | 6 ENTRY_ZONE_ACTIVE (wait retrace) | 7 TRADE_ACTIVE | 8 DONE
+const int PH_IDLE    = 0
+const int PH_FIND    = 1
+const int PH_LIQ     = 2
+const int PH_FVG     = 3
+const int PH_SWEPT   = 4
+const int PH_MSS     = 5
+const int PH_ZONE    = 6
+const int PH_TRADE   = 7
+const int PH_DONE    = 8
+
+var array<Setup> setups = array.new<Setup>()
+var array<int>   setupSeq = array.new<int>(1, 0)
+var array<int>   sweepSeq = array.new<int>(1, 0)   // increments on every liquidity sweep
+var array<int>   doneSeq  = array.new<int>(1, 0)   // increments on every finished setup
+
+// ---------------------------------------------------------------- alert / event dispatch ----
+
+// ---------------------------------------------------------------- generic helpers -------------
+fPhaseName(int ph) =>
+    switch ph
+        PH_IDLE  => "IDLE"
+        PH_FIND  => "FIND_LIQ"
+        PH_LIQ   => "LIQ_IDENTIFIED"
+        PH_FVG   => "HTF_FVG_ACTIVE"
+        PH_SWEPT => "SWEPT - WAIT_MSS"
+        PH_MSS   => "MSS_CONFIRMED"
+        PH_ZONE  => "WAIT_RETRACE"
+        PH_TRADE => "TRADE ACTIVE"
+        => "DONE"
+
+fPhasePublic(int ph) =>
+    ph <= PH_FVG ? "Waiting" : ph == PH_SWEPT ? "Armed" : ph <= PH_ZONE ? "Entry Ready" : ph == PH_TRADE ? "Active" : "Invalidated"
+
+// setup lookup by liquidity level (prevents duplicate setups on the same level) --------------
+fSetupOnLiq(float price, int side) =>
+    bool found = false
+    if setups.size() > 0
+        for i = 0 to setups.size() - 1
+            Setup s = setups.get(i)
+            if s.side == side and not na(s.liqPrice) and math.abs(s.liqPrice - price) < tickSz * 0.5 and s.phase < PH_DONE
+                found := true
+    found
+
+fActiveCount(int side) =>
+    int n = 0
+    if setups.size() > 0
+        for i = 0 to setups.size() - 1
+            Setup s = setups.get(i)
+            if s.side == side and s.phase < PH_DONE
+                n := n + 1
+    n
+
+// prune finished setups (bounded object lifecycle) -------------------------------------------
+fPruneSetups() =>
+    if setups.size() > 0
+        int keep = i_keepDone
+        array<int> cnt = array.new<int>()
+        cnt.push(0)
+        cnt.push(0)
+        if setups.size() > 0
+            for i = setups.size() - 1 to 0
+                Setup s = setups.get(i)
+                if s.phase == PH_DONE
+                    int idx = s.side == 1 ? 0 : 1
+                    int c = cnt.get(idx) + 1
+                    cnt.set(idx, c)
+                    if c > keep
+                        if not na(s.zoneBox)
+                            box.delete(s.zoneBox)
+                        if not na(s.brkBox)
+                            box.delete(s.brkBox)
+                        if not na(s.mitBox)
+                            box.delete(s.mitBox)
+                        if not na(s.maxLine)
+                            line.delete(s.maxLine)
+                        if not na(s.tlines)
+                            if s.tlines.size() > 0
+                                for k = 0 to s.tlines.size() - 1
+                                    line.delete(s.tlines.get(k))
+                        if not na(s.steps)
+                            if s.steps.size() > 0
+                                for k = 0 to s.steps.size() - 1
+                                    label.delete(s.steps.get(k))
+                        setups.remove(i)
+
+// ---------------------------------------------------------------- debug steps -----------------
+fStep(Setup s, string txt) =>
+    if i_debug and i_debugSteps and s.stepN < i_debugMaxLbl
+        s.stepN := s.stepN + 1
+        lbl = label.new(bar_index, s.side == 1 ? low - aSafe * 0.5 : high + aSafe * 0.5, str.tostring(s.stepN) + ". " + txt, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, fSideColor(s.side), size.tiny)
+        s.steps.push(lbl)
+// =============================================================================================
+//  SWEEP ENGINE
+//  A sweep is only valid on an EXTERNAL (granted) liquidity level. Once swept the level is
+//  flagged liquidity.isSwept = true and can never trigger a second sweep event.
+// =============================================================================================
+//  pending-sweep buffer: a sweep that has no relevant HTF FVG yet is parked here for
+//  "Sweep -> FVG discovery window" HTF candles. It does NOT occupy an active setup slot.
+// ---------------------------------------------------------------------------------------------
+var array<int>   psBar   = array.new<int>()
+var array<int>   psTime  = array.new<int>()
+var array<float> psExt   = array.new<float>()
+var array<float> psLvl   = array.new<float>()
+var array<int>   psDir   = array.new<int>()     //  1 = BSL sweep (bearish setup), -1 = SSL sweep
+var array<int>   psExp   = array.new<int>()     //  expiry in absolute HTF index
+
+fLiqIdxByPrice(float price, int dir) =>
+    int idx = -1
+    if liqLst.size() > 0
+        for i = liqLst.size() - 1 to 0
+            Liq q = liqLst.get(i)
+            if idx < 0 and q.dir == dir and math.abs(q.price - price) < tickSz * 0.5
+                idx := i
+    idx
+
+fMarkSwept(Liq q, int sBar, float sExt) =>
+    sweepSeq.set(0, sweepSeq.get(0) + 1)
+    if not na(q.lb)
+        label.delete(q.lb)
+        q.lb := na
+    if not na(q.ln)
+        line.delete(q.ln)
+        q.ln := na
+    q.isSwept    := true
+    q.sweptBar   := sBar
+    q.sweptPrice := sExt
+    if not fSetupOnLiq(q.price, q.dir == 1 ? -1 : 1)
+        psBar.push(sBar)
+        psTime.push(time)
+        psExt.push(sExt)
+        psLvl.push(q.price)
+        psDir.push(q.dir)
+        psExp.push(htfN + i_swFirstWin)
+        if psBar.size() > 20
+            psBar.shift()
+            psTime.shift()
+            psExt.shift()
+            psLvl.shift()
+            psDir.shift()
+            psExp.shift()
+    if i_showSweep
+        label.new(bar_index, sExt, "SWEEP", xloc.bar_index, yloc.price, color.new(color.black, 100), q.dir == 1 ? label.style_label_down : label.style_label_up, q.dir == 1 ? i_cBear : i_cBull, size.tiny)
+    string dirTxt = q.dir == 1 ? "BUY-SIDE liquidity swept" : "SELL-SIDE liquidity swept"
+    fire(q.dir == 1 ? "sweep_bsl" : "sweep_ssl", str.format("{0} | {1} {2} | Level {3} | Sweep price {4} | HTF {5} | LTF {6}", syminfo.ticker, dirTxt, q.kind, str.tostring(q.price, format.mintick), str.tostring(sExt, format.mintick), htfTf, timeframe.period))
+    pushLog("SWEEP: " + dirTxt + " @ " + str.tostring(q.price, format.mintick))
+
+fDetectSweeps() =>
+    float pen = i_sweepPen * aSafe
+    bool  htfMode = i_sweepTf == "HTF (confirmed)"
+    if liqLst.size() > 0
+        for i = 0 to liqLst.size() - 1
+            Liq q = liqLst.get(i)
+            if not q.isSwept and not q.stale
+                // ---- strict rejection: confirm / cancel the pending penetration of the previous bar
+                if q.pend and bar_index > q.pendBar
+                    bool conf = false
+                    if q.dir == 1
+                        conf := close < q.price and (not i_strictNoNew or high <= q.pendExt)
+                    else
+                        conf := close > q.price and (not i_strictNoNew or low >= q.pendExt)
+                    if conf
+                        fMarkSwept(q, q.pendBar, q.pendExt)
+                    q.pend := false
+                if not q.isSwept and not q.pend
+                    bool touch   = false
+                    bool reject  = false
+                    int  sBar    = bar_index
+                    float sExt   = na
+                    if htfMode
+                        if htfNew
+                            if q.dir == 1 and htfH > q.price + pen
+                                touch  := true
+                                sExt   := htfH
+                                reject := i_sweepMode == "Wick Sweep" ? true : htfC < q.price
+                            if q.dir == -1 and htfL < q.price - pen
+                                touch  := true
+                                sExt   := htfL
+                                reject := i_sweepMode == "Wick Sweep" ? true : htfC > q.price
+                    else
+                        if q.dir == 1 and high > q.price + pen
+                            touch  := true
+                            sExt   := high
+                            reject := i_sweepMode == "Wick Sweep" ? true : close < q.price
+                        if q.dir == -1 and low < q.price - pen
+                            touch  := true
+                            sExt   := low
+                            reject := i_sweepMode == "Wick Sweep" ? true : close > q.price
+                    if touch
+                        if reject and i_sweepMode == "Strict Rejection" and not htfMode
+                            q.pend    := true
+                            q.pendBar := bar_index
+                            q.pendExt := sExt
+                        else if reject
+                            fMarkSwept(q, sBar, sExt)
+
+// =============================================================================================
+//  07 - LTF MSS SCANNER   (causally connected to the HTF liquidity sweep)
+//  Rules (sell model, mirrored for buy):
+//    1. a meaningful LTF internal HIGH must be created AFTER the sweep bar
+//    2. the low protected by that high must be broken
+//    3. the break must occur AFTER the sweep bar and AFTER the post-sweep high  -> MSS
+//  Returns [ok, mssBar, mssLevel, postSwing, postBar, protSwing]
+// =============================================================================================
+fMssScan(int sd, int sweepBar, float sweepExt, int fromMin) =>
+    bool  ok      = false
+    int   mbar    = 0
+    float lvl     = na
+    float post    = na
+    float prot    = na
+    int   postBar = sweepBar
+    if sd == -1
+        int hb = sweepBar
+        if intHiLst.size() > 0
+            for i = 0 to intHiLst.size() - 1
+                Sw w = intHiLst.get(i)
+                if w.bar > sweepBar and w.bar > hb
+                    hb   := w.bar
+                    post := w.price
+        if not na(post)
+            postBar := hb
+            int pbest = -1
+            if intLoLst.size() > 0
+                for i = 0 to intLoLst.size() - 1
+                    Sw w = intLoLst.get(i)
+                    bool inWin = w.bar < postBar and (i_mssRefMode == "Last confirmed internal low" or w.bar >= postBar - i_mssRefLb)
+                    if inWin and (i_mssRefMode == "Last confirmed internal low" ? w.bar > pbest : (na(prot) or w.price < prot))
+                        pbest := w.bar
+                        prot  := w.price
+            if not na(prot)
+                if evBar.size() > 0
+                    for i = 0 to evBar.size() - 1
+                        if not ok and evBar.get(i) > math.max(postBar, fromMin) and (evType.get(i) == -1 or evType.get(i) == -2) and evLevel.get(i) <= prot
+                            ok  := true
+                            mbar := evBar.get(i)
+                            lvl  := evLevel.get(i)
+        else if not i_mssReqSwing
+            post    := sweepExt
+            postBar := sweepBar
+            if evBar.size() > 0
+                for i = 0 to evBar.size() - 1
+                    if not ok and evBar.get(i) > sweepBar and (evType.get(i) == -1 or evType.get(i) == -2)
+                        ok  := true
+                        mbar := evBar.get(i)
+                        lvl  := evLevel.get(i)
+    else
+        int lb = sweepBar
+        if intLoLst.size() > 0
+            for i = 0 to intLoLst.size() - 1
+                Sw w = intLoLst.get(i)
+                if w.bar > sweepBar and w.bar > lb
+                    lb   := w.bar
+                    post := w.price
+        if not na(post)
+            postBar := lb
+            int pbest = -1
+            if intHiLst.size() > 0
+                for i = 0 to intHiLst.size() - 1
+                    Sw w = intHiLst.get(i)
+                    bool inWin = w.bar < postBar and (i_mssRefMode == "Last confirmed internal low" or w.bar >= postBar - i_mssRefLb)
+                    if inWin and (i_mssRefMode == "Last confirmed internal low" ? w.bar > pbest : (na(prot) or w.price > prot))
+                        pbest := w.bar
+                        prot  := w.price
+            if not na(prot)
+                if evBar.size() > 0
+                    for i = 0 to evBar.size() - 1
+                        if not ok and evBar.get(i) > math.max(postBar, fromMin) and (evType.get(i) == 1 or evType.get(i) == 2) and evLevel.get(i) >= prot
+                            ok  := true
+                            mbar := evBar.get(i)
+                            lvl  := evLevel.get(i)
+        else if not i_mssReqSwing
+            post    := sweepExt
+            postBar := sweepBar
+            if evBar.size() > 0
+                for i = 0 to evBar.size() - 1
+                    if not ok and evBar.get(i) > sweepBar and (evType.get(i) == 1 or evType.get(i) == 2)
+                        ok  := true
+                        mbar := evBar.get(i)
+                        lvl  := evLevel.get(i)
+    [ok, mbar, lvl, post, postBar, prot]
+
+// =============================================================================================
+//  07b - DISPLACEMENT FILTER   Returns [maxBody, consecutiveDirectionalCandles]
+// =============================================================================================
+fDisplacement(int sd, int fromBar, int toBar) =>
+    float mb   = 0.0
+    int   cons = 0
+    if toBar >= fromBar and (toBar - fromBar) <= 400 and (bar_index - fromBar) <= 490
+        bool breakOnly = i_dispSource == "MSS break candle"
+        for k = fromBar to toBar
+            if not breakOnly or k == toBar
+                int   off  = bar_index - k
+                float o    = open[off]
+                float c    = close[off]
+                bool  dirOK = sd == -1 ? c < o : c > o
+                float body = math.abs(c - o)
+                if dirOK and body > mb
+                    mb := body
+        int k2 = toBar
+        while k2 >= fromBar and cons < 50
+            int  off   = bar_index - k2
+            bool dirOK = sd == -1 ? close[off] < open[off] : close[off] > open[off]
+            if dirOK
+                cons := cons + 1
+                k2   := k2 - 1
+            else
+                break
+    [mb, cons]
+
+// =============================================================================================
+//  08 - BREAKER BLOCK ENGINE   (structurally linked to the MSS - never an arbitrary order block)
+//  Bearish breaker : the bullish candle that produced the failed rally into the post-sweep high
+//                    and whose area price now retests from below after the bearish MSS.
+//  Returns [zTop, zBot, zBar, zOpen, zRef]
+// =============================================================================================
+fFindBreaker(int sd, int fromBar, int toBar) =>
+    float zTop  = na
+    float zBot  = na
+    int   zBar  = 0
+    float zOpen = na
+    float zRef  = na
+    int   a     = math.max(math.max(fromBar, toBar - i_brkLookback + 1), bar_index - 490)
+    int   b     = toBar
+    if b >= a
+        for k = a to b
+            int   off   = bar_index - k
+            float o     = open[off]
+            float c     = close[off]
+            float h     = high[off]
+            float l     = low[off]
+            bool  isOpp = sd == -1 ? c > o : c < o
+            if isOpp
+                bool take = i_brkPick == "Most recent" ? true : (na(zRef) or (sd == -1 ? h > zRef : l < zRef))
+                if take
+                    zBar  := k
+                    zRef  := sd == -1 ? h : l
+                    zOpen := o
+                    if i_brkRange == "Full range (high-low)"
+                        zTop := h
+                        zBot := l
+                    else if i_brkRange == "Body (open-close)"
+                        zTop := math.max(o, c)
+                        zBot := math.min(o, c)
+                    else
+                        zTop := sd == -1 ? h : math.max(o, c)
+                        zBot := sd == -1 ? math.min(o, c) : l
+    [zTop, zBot, zBar, zOpen, zRef]
+
+// =============================================================================================
+//  09 - MITIGATION BLOCK ENGINE
+//  Sell model : the last DOWN candle between the sweep and the MSS break (the failing attempt to
+//               continue lower) - price re-tests it from below after the break.
+//  Returns [zTop, zBot, zBar, zOpen]
+// =============================================================================================
+fFindMitigation(int sd, int fromBar, int toBar) =>
+    float zTop  = na
+    float zBot  = na
+    int   zBar  = 0
+    float zOpen = na
+    int   a     = math.max(fromBar, bar_index - 490)
+    int   b     = toBar
+    if i_mitEnable and b >= a
+        for k = a to b
+            int   off   = bar_index - k
+            float o     = open[off]
+            float c     = close[off]
+            float h     = high[off]
+            float l     = low[off]
+            bool  isMit = sd == -1 ? c < o : c > o
+            if isMit
+                zBar  := k
+                zOpen := o
+                if i_mitRange == "Full range (high-low)"
+                    zTop := h
+                    zBot := l
+                else if i_mitRange == "Body (open-close)"
+                    zTop := math.max(o, c)
+                    zBot := math.min(o, c)
+                else
+                    zTop := sd == -1 ? math.max(o, c) : h
+                    zBot := sd == -1 ? l : math.min(o, c)
+    [zTop, zBot, zBar, zOpen]
+
+// =============================================================================================
+//  12 - TARGET LIQUIDITY ENGINE
+//  Targets are LIQUIDITY, never fixed pip counts. Hierarchy: internal LTF -> external LTF major
+//  -> HTF external. Already-swept liquidity is skipped unless the user allows it.
+//  Returns [tp1, tp2, rr1, rr2]
+// =============================================================================================
+fFindTargets(int sd, float entry, float sl) =>
+    float tp1 = na
+    float tp2 = na
+    float rr1 = 0.0
+    float rr2 = 0.0
+    float risk = math.abs(entry - sl)
+    float minD = i_tpMinDist * aSafe
+    array<float> cp = array.new<float>()
+    array<int>   ct = array.new<int>()
+    // tier 1 : internal LTF liquidity
+    if intLoLst.size() > 0
+        for i = 0 to intLoLst.size() - 1
+            Sw w = intLoLst.get(i)
+            if (sd == -1 and w.price < entry - minD) or (sd == 1 and w.price > entry + minD)
+                cp.push(w.price)
+                ct.push(1)
+    if intHiLst.size() > 0
+        for i = 0 to intHiLst.size() - 1
+            Sw w = intHiLst.get(i)
+            if (sd == -1 and w.price < entry - minD) or (sd == 1 and w.price > entry + minD)
+                cp.push(w.price)
+                ct.push(1)
+    // tier 2 : external LTF major liquidity
+    if majLoLst.size() > 0
+        for i = 0 to majLoLst.size() - 1
+            Sw w = majLoLst.get(i)
+            if (sd == -1 and w.price < entry - minD) or (sd == 1 and w.price > entry + minD)
+                cp.push(w.price)
+                ct.push(2)
+    if majHiLst.size() > 0
+        for i = 0 to majHiLst.size() - 1
+            Sw w = majHiLst.get(i)
+            if (sd == -1 and w.price < entry - minD) or (sd == 1 and w.price > entry + minD)
+                cp.push(w.price)
+                ct.push(2)
+    // tier 3 : HTF external liquidity (unswept)
+    if liqLst.size() > 0
+        for i = 0 to liqLst.size() - 1
+            Liq q = liqLst.get(i)
+            bool okSide = sd == -1 ? q.price < entry - minD : q.price > entry + minD
+            bool unswept = i_tpSkipSwpt ? (not q.isSwept and not q.stale) : not q.stale
+            if q.dir == sd and okSide and unswept
+                int tier = str.startswith(q.kind, "HTF") or str.startswith(q.kind, "Equal") ? 3 : 2
+                cp.push(q.price)
+                ct.push(tier)
+    // ---- TP1 : walk the configured hierarchy, take the NEAREST level of the first tier that can
+    //           satisfy the minimum R:R (a liquidity level closer than minimum R:R is unusable)
+    array<int> order = array.new<int>()
+    if i_tp1Tier == "Internal (LTF)"
+        order.push(1)
+    else if i_tp1Tier == "External (LTF major)"
+        order.push(2)
+    else if i_tp1Tier == "HTF external"
+        order.push(3)
+    else
+        order.push(1)
+        order.push(2)
+        order.push(3)
+    if order.size() > 0
+        for oi = 0 to order.size() - 1
+            if na(tp1)
+                int   want = order.get(oi)
+                float best = na
+                if cp.size() > 0
+                    for i = 0 to cp.size() - 1
+                        if ct.get(i) == want
+                            float p = cp.get(i)
+                            bool  passes = true
+                            if i_reqRR and (i_rrTarget == "TP1" or i_rrTarget == "Best available")
+                                passes := math.abs(entry - p) >= i_minRR * risk
+                            if passes and (na(best) or math.abs(entry - p) < math.abs(entry - best))
+                                best := p
+                tp1 := best
+    // ---- TP2 : next liquidity beyond TP1 ("Next nearest" = any tier, "Next tier up" = further out)
+    if not na(tp1) and i_tp2Mode != "None"
+        float best2 = na
+        if cp.size() > 0
+            for i = 0 to cp.size() - 1
+                float p = cp.get(i)
+                bool beyond = sd == -1 ? p < tp1 - tickSz : p > tp1 + tickSz
+                bool tierOK = true
+                if i_tp2Mode == "Next tier up"
+                    tierOK := ct.get(i) > 1
+                if beyond and tierOK and (na(best2) or math.abs(entry - p) < math.abs(entry - best2))
+                    best2 := p
+        tp2 := best2
+    if not na(tp1) and risk > 0
+        rr1 := math.abs(entry - tp1) / risk
+    if not na(tp2) and risk > 0
+        rr2 := math.abs(entry - tp2) / risk
+    [tp1, tp2, rr1, rr2]
+
+// =============================================================================================
+//  SETUP CREATION + LIFECYCLE ENGINE
+// =============================================================================================
+fFvgDist(float price, float top, float bot) =>
+    price < bot ? bot - price : price > top ? price - top : 0.0
+
+fFvgByTime(int t) =>
+    int idx = -1
+    if fvgLst.size() > 0
+        for i = fvgLst.size() - 1 to 0
+            Fvg f = fvgLst.get(i)
+            if idx < 0 and f.htfBarTime == t
+                idx := i
+    idx
+
+fLiqByPrice(float price, int dir) =>
+    int idx = -1
+    if liqLst.size() > 0
+        for i = liqLst.size() - 1 to 0
+            Liq q = liqLst.get(i)
+            if idx < 0 and q.dir == dir and math.abs(q.price - price) < tickSz * 0.5
+                idx := i
+    idx
+
+fFvgInUse(int t) =>
+    bool used = false
+    if setups.size() > 0
+        for i = 0 to setups.size() - 1
+            Setup s = setups.get(i)
+            if s.phase < PH_DONE and s.fvgTime == t
+                used := true
+    used
+
+//  Relevance = the liquidity event must map to the FVG (11 - IMPORTANT HTF FVG RELATIONSHIP)
+//  1. the FVG was created by the displacement candle of that very sweep (linked source), OR
+//  2. the sweep price traded INTO the FVG zone, OR
+//  3. the sweep price is within "Maximum Sweep-to-FVG Distance" of the zone
+fFvgRelevant(Fvg f, float sweepPrice, int liqIdx) =>
+    bool linked = liqIdx >= 0 and f.pairedIdx == liqIdx
+    bool inside = sweepPrice >= f.bot and sweepPrice <= f.top
+    float maxD  = i_fvgDistMode == "ATR" ? i_fvgDistATR * htfAtrSafe : sweepPrice * i_fvgDistPct / 100.0
+    bool near   = fFvgDist(sweepPrice, f.top, f.bot) <= maxD
+    if not i_fvgRequire
+        true
+    else
+        linked or inside or near
+
+//  Best relevant UNUSED FVG for a side. Returns the fvgLst index or -1.
+fBestFvg(int side, float sweepPrice, int liqIdx) =>
+    int   best = -1
+    float bestD = na
+    if fvgLst.size() > 0
+        for i = 0 to fvgLst.size() - 1
+            Fvg f = fvgLst.get(i)
+            bool fresh = htfSec <= 0 or (time - f.htfBarTime) <= i_fvgLookback * htfSec * 1000.0
+        if fresh and f.dir == side and not f.mitigated and not f.invalid and not fFvgInUse(f.htfBarTime) and fFvgRelevant(f, sweepPrice, liqIdx)
+                float d = fFvgDist(sweepPrice, f.top, f.bot)
+                if na(bestD) or d < bestD
+                    bestD := d
+                    best  := i
+    best
+
+fNewSetup(int side, float liqPrice, int liqTime, string liqKind, int fvgIdx, int phase) =>
+    setupSeq.set(0, setupSeq.get(0) + 1)
+    Setup s = Setup.new(0, 0, 0, 0, 0, 0, na, 0, "", 0, na, 0, na, na, na, 0, false, 0, na, na, 0, na, "", na, na, 0, na, na, na, na, na, false, false, false, 0, "", "", 0, 0, na, na, na, na, na, na)
+    s.id       := setupSeq.get(0)
+    s.side     := side
+    s.phase    := phase
+    s.liqPrice := liqPrice
+    s.liqTime  := liqTime
+    s.liqKind  := liqKind
+    s.steps    := array.new<label>()
+    s.tlines   := array.new<line>()
+    s.bornBar  := bar_index
+    s.progress := phase == PH_SWEPT ? 3 : fvgIdx >= 0 ? 2 : 1
+    if fvgIdx >= 0
+        Fvg f = fvgLst.get(fvgIdx)
+        s.fvgTop  := f.top
+        s.fvgBot  := f.bot
+        s.fvgMid  := f.mid
+        s.fvgTime := f.htfBarTime
+    setups.push(s)
+
+// ---------------------------------------------------------------------------------------------
+//  CREATE candidate setups: EXTERNAL liquidity + relevant HTF FVG present
+// ---------------------------------------------------------------------------------------------
+fCreateSetups() =>
+    // ---- route B : liquidity identified first, FVG appears while the level is still intact
+    if liqLst.size() > 0
+        for i = 0 to liqLst.size() - 1
+            Liq q = liqLst.get(i)
+            int side = q.dir == 1 ? -1 : 1
+            int maxN = side == 1 ? i_maxBull : i_maxBear
+            if not q.isSwept and not q.stale and not fSetupOnLiq(q.price, side) and fActiveCount(side) < maxN
+                int fi = fBestFvg(side, q.price, i)
+                if fi >= 0
+                    fNewSetup(side, q.price, q.htfBarTime, q.kind, fi, PH_FVG)
+                    fire(side == 1 ? "liq_ssl" : "liq_bsl", str.format("{0} | External {1} liquidity identified | Level {2} | HTF {3} | LTF {4}", syminfo.ticker, side == 1 ? "SELL-SIDE" : "BUY-SIDE", str.tostring(q.price, format.mintick), htfTf, timeframe.period))
+                    pushLog("1. External Liquidity Found (" + (side == 1 ? "SSL" : "BSL") + ") @ " + str.tostring(q.price, format.mintick))
+    // ---- route A : sweep happened first and the relevant HTF FVG followed inside the window
+    if i_allowSwFirst and psBar.size() > 0
+        for k = 0 to psBar.size() - 1
+            int   sDir = psDir.get(k) == 1 ? -1 : 1
+            int   maxN = sDir == 1 ? i_maxBull : i_maxBear
+            float lvl  = psLvl.get(k)
+            if psExp.get(k) >= htfN and not fSetupOnLiq(lvl, sDir) and fActiveCount(sDir) < maxN
+                int li = fLiqByPrice(lvl, psDir.get(k))
+                int fi = fBestFvg(sDir, psExt.get(k), li)
+                if fi >= 0
+                    fNewSetup(sDir, lvl, 0, "External Sweep", fi, PH_SWEPT)
+                    Setup s = setups.get(setups.size() - 1)
+                    s.sweepBar := psBar.get(k)
+                    s.sweepExt := psExt.get(k)
+                    pushLog("1. External Liquidity Found + swept first, HTF FVG linked")
+    // ---- drop expired pending sweeps (no relevant FVG inside the discovery window)
+    if psBar.size() > 0
+        for k = psBar.size() - 1 to 0
+            if psExp.get(k) < htfN
+                pushLog("INVALIDATED: sweep without a relevant HTF FVG (discovery window expired)")
+                psBar.remove(k)
+                psTime.remove(k)
+                psExt.remove(k)
+                psLvl.remove(k)
+                psDir.remove(k)
+                psExp.remove(k)
+
+// =============================================================================================
+//  19 / 20 / 21 / 22 / 23 - ENTRY ZONE, ENTRY PRICE, STOP LOSS, TARGET, R:R
+//  Returns "" when the zone is valid, otherwise the rejection reason (validation matrix).
+// =============================================================================================
+fBuildEntry(Setup s) =>
+    string reason = ""
+    // ---- mandatory: the relevant HTF FVG must still be valid
+    int  fi    = fFvgByTime(s.fvgTime)
+    bool fvgOK = false
+    if fi >= 0
+        Fvg fv = fvgLst.get(fi)
+        fvgOK := not fv.mitigated and not fv.invalid
+    if not fvgOK
+        reason := "HTF FVG mitigated/invalidated before the entry zone"
+    // ---- zone candidates
+    float bTop  = na
+    float bBot  = na
+    int   bBar  = 0
+    float bOpen = na
+    float mTop  = na
+    float mBot  = na
+    int   mBar  = 0
+    float mOpen = na
+    if reason == ""
+        [bkTop, bkBot, bkBar, bkOpen, bkRef] = fFindBreaker(s.side, s.swingPostBar, s.mssBar - 1)
+        bTop  := bkTop
+        bBot  := bkBot
+        bBar  := bkBar
+        bOpen := bkOpen
+        if i_mitEnable
+            [mtTop, mtBot, mtBar, mtOpen] = fFindMitigation(s.side, i_mitIncSweep ? s.sweepBar : s.sweepBar + 1, s.mssBar)
+            mTop  := mtTop
+            mBot  := mtBot
+            mBar  := mtBar
+            mOpen := mtOpen
+    bool bOK = not na(bTop) and bTop > bBot
+    if bOK and i_brkAbove
+        bOK := s.side == -1 ? bBot > s.protSwing : bTop < s.protSwing
+    bool mOK = not na(mTop) and mTop > mBot
+    if mOK and i_brkAbove
+        mOK := s.side == -1 ? mBot > s.protSwing : mTop < s.protSwing
+    // ---- zone selection (08/09/10 : Entry Zone Priority)
+    float zTop  = na
+    float zBot  = na
+    int   zBar  = 0
+    float zOpen = na
+    string src  = ""
+    bool  chosen = false
+    if reason == ""
+        bool forceBrk = i_zonePrio == "Breaker only"
+        bool forceMit = i_zonePrio == "Mitigation only"
+        bool forceFvg = i_zonePrio == "FVG only"
+        bool chain    = i_zonePrio == "Breaker -> Mitigation -> FVG"
+        bool confl    = i_zonePrio == "Confluence required"
+        if confl
+            if bOK and fvgOK and math.min(bTop, s.fvgTop) > math.max(bBot, s.fvgBot)
+                zTop    := math.min(bTop, s.fvgTop)
+                zBot    := math.max(bBot, s.fvgBot)
+                zBar    := bBar
+                zOpen   := bOpen
+                src     := "Breaker+FVG"
+                chosen  := true
+            else
+                reason := "Confluence required: breaker and HTF FVG do not overlap"
+        else
+            if not chosen and bOK and (forceBrk or chain)
+                zTop := bTop
+                zBot := bBot
+                zBar := bBar
+                zOpen := bOpen
+                src  := "Breaker"
+                chosen := true
+            if not chosen and mOK and (forceMit or chain)
+                zTop := mTop
+                zBot := mBot
+                zBar := mBar
+                zOpen := mOpen
+                src  := "Mitigation"
+                chosen := true
+            if not chosen and fvgOK and (forceFvg or chain)
+                zTop := s.fvgTop
+                zBot := s.fvgBot
+                zBar := bar_index
+                zOpen := s.fvgMid
+                src  := "FVG"
+                chosen := true
+            if not chosen and (forceBrk or forceMit or forceFvg)
+                reason := "no valid " + i_zonePrio + " zone after the MSS"
+    // ---- zone validation
+    float near = na
+    if reason == "" and chosen
+        if zTop <= zBot
+            reason := "invalid zone geometry"
+        else
+            near := s.side == -1 ? zBot : zTop
+            float dist = s.side == -1 ? near - close : close - near
+            if dist <= 0
+                // price already at / through the entry zone when it was created
+                if i_allowMkt and i_onImmediate == "Market entry (if enabled)"
+                    near := close
+                else
+                    reason := "price already beyond the entry zone (no valid retracement)"
+            else if dist > i_brkMaxDist * aSafe
+                reason := "entry zone too far from price (> " + str.tostring(i_brkMaxDist, "#.#") + " ATR)"
+    // ---- entry price model (20)
+    float entry = na
+    if reason == "" and chosen
+        if i_entryModel == "50% of zone"
+            entry := (zTop + zBot) / 2
+        else if i_entryModel == "Open of zone candle"
+            entry := na(zOpen) ? (zTop + zBot) / 2 : zOpen
+        else if i_entryModel == "FVG midpoint"
+            entry := na(s.fvgMid) ? (zTop + zBot) / 2 : s.fvgMid
+        else if i_entryModel == "Full zone (near edge)"
+            entry := near
+        else
+            entry := s.side == -1 ? zTop - (zTop - zBot) * i_entryPct / 100.0 : zBot + (zTop - zBot) * i_entryPct / 100.0
+        if i_allowMkt and i_onImmediate == "Market entry (if enabled)" and ((s.side == -1 and entry > close) or (s.side == 1 and entry < close))
+            entry := close
+            s.mktEntry := true
+    // ---- stop loss (21)
+    float slv = na
+    if reason == "" and not na(entry)
+        float ref = s.sweepExt
+        if i_slRef == "Post-sweep swing (LTF)"
+            ref := s.swingPost
+        else if i_slRef == "Wider of both"
+            float other = na(s.swingPost) ? s.sweepExt : s.swingPost
+            ref := s.side == -1 ? math.max(s.sweepExt, other) : math.min(s.sweepExt, other)
+        if not na(ref)
+            float buf = i_slBufMode == "ATR" ? i_slBufATR * aSafe : i_slBufMode == "Ticks" ? i_slBufTicks * tickSz : close * i_slBufPct / 100.0
+            slv := s.side == -1 ? ref + buf : ref - buf
+            if s.side == -1 and slv <= entry
+                reason := "invalid stop loss (below the sell entry)"
+            if s.side == 1 and slv >= entry
+                reason := "invalid stop loss (above the buy entry)"
+        else
+            reason := "stop-loss reference unavailable"
+    // ---- targets + risk/reward (22/23)
+    float tp1 = na
+    float tp2 = na
+    float rr  = 0.0
+    if reason == "" and not na(entry) and not na(slv)
+        [tg1, tg2, r1, r2] = fFindTargets(s.side, entry, slv)
+        tp1 := tg1
+        tp2 := tg2
+        if na(tp1)
+            if i_reqTp
+                reason := "no valid opposing liquidity target"
+            else
+                reason := "no liquidity target available (targets disabled by user)"
+        if reason == "" and i_reqRR
+            float need = i_rrTarget == "TP1" ? r1 : i_rrTarget == "TP2" ? (na(tp2) ? r1 : r2) : math.max(r1, na(tp2) ? r1 : r2)
+            if need < i_minRR
+                reason := "R:R " + str.tostring(need, "#.##") + " below minimum " + str.tostring(i_minRR, "#.##")
+        if reason == ""
+            rr := r1
+    if reason == ""
+        s.zoneTop   := zTop
+        s.zoneBot   := zBot
+        s.zoneBar   := zBar
+        s.zoneSrc   := src
+        s.zoneSetBar:= bar_index
+        s.entry     := entry
+        s.sl        := slv
+        s.tp1       := tp1
+        s.tp2       := tp2
+        s.rr        := rr
+        s.armed     := true
+        // secondary context zones (skipped when that zone IS the chosen entry zone)
+        if i_showBreaker and bOK and src != "Breaker"
+            if not na(s.brkBox)
+                box.delete(s.brkBox)
+            s.brkBox := box.new(bar_index, bTop, bar_index + 10, bBot, border_color = color.new(i_cBear, 55), border_width = 1, border_style = line.style_dashed, bgcolor = color.new(i_cBear, 93), extend = extend.right)
+            label.new(bar_index, bTop, "BREAKER", xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_down, color.new(i_cBear, 20), fLblSize())
+        if i_showMit and mOK and src != "Mitigation"
+            if not na(s.mitBox)
+                box.delete(s.mitBox)
+            s.mitBox := box.new(bar_index, mTop, bar_index + 10, mBot, border_color = color.new(i_cNeutral, 55), border_width = 1, border_style = line.style_dashed, bgcolor = color.new(i_cNeutral, 93), extend = extend.right)
+            label.new(bar_index, mBot, "MITIGATION", xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_up, color.new(i_cNeutral, 20), fLblSize())
+    reason
+
+// =============================================================================================
+//  INVALIDATION / COMPLETION / TRADE MANAGEMENT
+// =============================================================================================
+fFreezeZone(Setup s) =>
+    if not na(s.zoneBox)
+        box.set_extend(s.zoneBox, extend.none)
+        box.set_right(s.zoneBox, bar_index)
+
+fKillSetup(Setup s, string reason) =>
+    if s.phase < PH_DONE
+        doneSeq.set(0, doneSeq.get(0) + 1)
+        s.phase   := PH_DONE
+        s.outcome := "INVALIDATED"
+        s.reject  := reason
+        fFreezeZone(s)
+        if i_debug or s.progress >= 3
+            label.new(bar_index, s.side == 1 ? low - aSafe * 0.6 : high + aSafe * 0.6, "INVALIDATED: " + reason, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_center, i_cNeutral, size.tiny)
+        fire("invalid", str.format("{0} | {1} setup #{2} INVALIDATED | {3} | Level {4} | HTF {5} | LTF {6}", syminfo.ticker, fSideWord(s.side), str.tostring(s.id), reason, str.tostring(s.liqPrice, format.mintick), htfTf, timeframe.period))
+        pushLog("INVALIDATED: " + reason)
+
+fCompleteSetup(Setup s, string outcome, string detail) =>
+    if s.phase < PH_DONE
+        doneSeq.set(0, doneSeq.get(0) + 1)
+        s.phase   := PH_DONE
+        s.outcome := outcome
+        fFreezeZone(s)
+        label.new(bar_index, s.side == 1 ? high + aSafe * 0.8 : low - aSafe * 0.8, outcome, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_center, outcome == "TARGET_REACHED" ? i_cTP : i_cSL, size.small)
+        pushLog(outcome + " " + detail)
+
+fManageTrade(Setup s) =>
+    if s.side == -1
+        if high >= s.sl
+            fire("sl", str.format("{0} | SELL SL HIT | Setup #{1} | SL {2}", syminfo.ticker, str.tostring(s.id), str.tostring(s.sl, format.mintick)))
+            fCompleteSetup(s, "STOP_HIT", "SL " + str.tostring(s.sl, format.mintick))
+        else if not na(s.tp2) and low <= s.tp2
+            if not na(s.tp1) and low <= s.tp1
+                fire("tp1", str.format("{0} | SELL TP1 HIT | {1}", syminfo.ticker, str.tostring(s.tp1, format.mintick)))
+            fire("tp2", str.format("{0} | SELL TP2 HIT | {1} | R:R {2}", syminfo.ticker, str.tostring(s.tp2, format.mintick), str.tostring(s.rr, "#.##")))
+            fCompleteSetup(s, "TARGET_REACHED", "TP2 " + str.tostring(s.tp2, format.mintick))
+        else if not na(s.tp1) and low <= s.tp1
+            fire("tp1", str.format("{0} | SELL TP1 HIT | {1} | R:R {2}", syminfo.ticker, str.tostring(s.tp1, format.mintick), str.tostring(s.rr, "#.##")))
+            fCompleteSetup(s, "TARGET_REACHED", "TP1 " + str.tostring(s.tp1, format.mintick))
+    else
+        if low <= s.sl
+            fire("sl", str.format("{0} | BUY SL HIT | Setup #{1} | SL {2}", syminfo.ticker, str.tostring(s.id), str.tostring(s.sl, format.mintick)))
+            fCompleteSetup(s, "STOP_HIT", "SL " + str.tostring(s.sl, format.mintick))
+        else if not na(s.tp2) and high >= s.tp2
+            if not na(s.tp1) and high >= s.tp1
+                fire("tp1", str.format("{0} | BUY TP1 HIT | {1}", syminfo.ticker, str.tostring(s.tp1, format.mintick)))
+            fire("tp2", str.format("{0} | BUY TP2 HIT | {1} | R:R {2}", syminfo.ticker, str.tostring(s.tp2, format.mintick), str.tostring(s.rr, "#.##")))
+            fCompleteSetup(s, "TARGET_REACHED", "TP2 " + str.tostring(s.tp2, format.mintick))
+        else if not na(s.tp1) and high >= s.tp1
+            fire("tp1", str.format("{0} | BUY TP1 HIT | {1} | R:R {2}", syminfo.ticker, str.tostring(s.tp1, format.mintick), str.tostring(s.rr, "#.##")))
+            fCompleteSetup(s, "TARGET_REACHED", "TP1 " + str.tostring(s.tp1, format.mintick))
+
+// =============================================================================================
+//  DRAWING (bounded number of objects, recycled per setup)
+// =============================================================================================
+fDrawZone(Setup s) =>
+    color c = fSideColor(s.side)
+    if not na(s.zoneBox)
+        box.delete(s.zoneBox)
+    // hard cap on zone boxes: the oldest finished setup releases its box first
+    int zc = 1
+    int oldest = -1
+    if setups.size() > 0
+        for i = 0 to setups.size() - 1
+            Setup o = setups.get(i)
+            if o.id != s.id and not na(o.zoneBox)
+                zc := zc + 1
+                if oldest < 0
+                    oldest := i
+    if zc > i_maxZones and oldest >= 0
+        Setup oo = setups.get(oldest)
+        if not na(oo.zoneBox)
+            box.delete(oo.zoneBox)
+            oo.zoneBox := na
+    s.zoneBox := box.new(bar_index, s.zoneTop, bar_index + 10, s.zoneBot, border_color = c, border_width = 1, bgcolor = color.new(c, i_showEntry ? 78 : 100), extend = i_extendR ? extend.right : extend.none)
+    if i_showEntry
+        string txt = s.zoneSrc == "Breaker" ? "BREAKER" : s.zoneSrc == "Mitigation" ? "MITIGATION" : s.zoneSrc == "FVG" ? "HTF FVG" : "BREAKER+FVG"
+        label.new(bar_index, s.side == -1 ? s.zoneTop : s.zoneBot, txt, xloc.bar_index, yloc.price, color.new(color.black, 100), s.side == -1 ? label.style_label_up : label.style_label_down, c, size.tiny)
+
+fDrawTrade(Setup s) =>
+    if i_showTrade
+        color c = fSideColor(s.side)
+        s.tlines.push(line.new(bar_index, s.entry, bar_index + 10, s.entry, xloc.bar_index, extend.right, i_cEntry, line.style_solid, 1))
+        s.tlines.push(line.new(bar_index, s.sl, bar_index + 10, s.sl, xloc.bar_index, extend.right, i_cSL, line.style_dashed, 1))
+        label.new(bar_index, s.entry, (s.side == -1 ? "SELL LIMIT " : "BUY LIMIT ") + str.tostring(s.entry, format.mintick), xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, i_cEntry, size.tiny)
+        label.new(bar_index, s.sl, "SL " + str.tostring(s.sl, format.mintick), xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, i_cSL, size.tiny)
+        if not na(s.tp1) and i_showTgt
+            s.tlines.push(line.new(bar_index, s.tp1, bar_index + 10, s.tp1, xloc.bar_index, extend.right, i_cTP, line.style_dotted, 1))
+            label.new(bar_index, s.tp1, "TP1 " + str.tostring(s.tp1, format.mintick) + "  R:R " + str.tostring(s.rr, "#.##"), xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, i_cTP, size.tiny)
+        if not na(s.tp2) and i_showTgt
+            s.tlines.push(line.new(bar_index, s.tp2, bar_index + 10, s.tp2, xloc.bar_index, extend.right, i_cTP, line.style_dotted, 1))
+            label.new(bar_index, s.tp2, "TP2 " + str.tostring(s.tp2, format.mintick), xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, i_cTP, size.tiny)
+
+// =============================================================================================
+//  18 / 19 - LIMIT ENTRY TRIGGER
+// =============================================================================================
+fTryFill(Setup s) =>
+    // a limit can only fill from the bar AFTER the zone became active: no intra-bar hindsight fill
+    if s.armed and not s.entered and not na(s.entry) and (bar_index > s.zoneSetBar or s.mktEntry)
+        bool fill = false
+        if i_entryTrig == "Touch (limit fill)"
+            fill := s.side == -1 ? high >= s.entry : low <= s.entry
+        else
+            fill := s.side == -1 ? close >= s.entry : close <= s.entry
+        if fill
+            s.entered  := true
+            s.entryBar := bar_index
+            s.phase    := PH_TRADE
+            s.progress := 8
+            fStep(s, "Entry Triggered")
+            string msgE = syminfo.ticker + " | " + fSideWord(s.side) + " ENTRY TRIGGERED | Setup #" + str.tostring(s.id) + " | Symbol " + syminfo.ticker + " | HTF " + htfTf + " | LTF " + timeframe.period + " | Liquidity " + fPx(s.liqPrice) + " | Sweep " + fPx(s.sweepExt) + " | MSS " + fPx(s.mssLevel) + " | Entry " + fPx(s.entry) + " | SL " + fPx(s.sl) + " | TP1 " + fPx(s.tp1) + " | TP2 " + fPx(s.tp2) + " | R:R " + str.tostring(s.rr, "#.##")
+            fire("entry", msgE)
+            fDrawTrade(s)
+
+// =============================================================================================
+//  24 / 25 - SETUP STATE MACHINE (identical for both directions through s.side)
+// =============================================================================================
+fAdvance(Setup s) =>
+    // ---------------- PH_FVG : waiting for the sweep of the identified external liquidity
+    if s.phase == PH_FVG
+        if i_defSweepAge > 0 and (bar_index - s.bornBar) > i_defSweepAge
+            fKillSetup(s, "external liquidity was not swept inside the validity window")
+        else
+            int li = fLiqByPrice(s.liqPrice, s.side == 1 ? -1 : 1)
+            bool swept = false
+            float sext = na
+            int   sbar = 0
+            if li >= 0
+                Liq q = liqLst.get(li)
+                swept := q.isSwept
+                sext  := q.sweptPrice
+                sbar  := q.sweptBar
+            if swept
+                s.sweepBar := sbar
+                s.sweepExt := sext
+                s.phase    := PH_SWEPT
+                s.progress := 3
+                fStep(s, "Liquidity Swept")
+    // ---------------- PH_SWEPT : waiting for the LTF MSS
+    else if s.phase == PH_SWEPT
+        int  fi2    = fFvgByTime(s.fvgTime)
+        bool fvgBad = fi2 < 0
+        if fi2 >= 0
+            Fvg fv = fvgLst.get(fi2)
+            fvgBad := fv.mitigated or fv.invalid
+        if fvgBad
+            fKillSetup(s, "HTF FVG mitigated/invalidated before the MSS")
+        else if i_maxSweepMss > 0 and (bar_index - s.sweepBar) > i_maxSweepMss
+            fKillSetup(s, "no MSS inside the Sweep -> MSS window (" + str.tostring(i_maxSweepMss) + " LTF bars)")
+        else if s.side == -1 and not na(s.sweepExt) and high > s.sweepExt + i_mssMaxExt * aSafe
+            fKillSetup(s, "price extended beyond the sweep high by more than " + str.tostring(i_mssMaxExt, "#.#") + " ATR (sweep failed to reject)")
+        else if s.side == 1 and not na(s.sweepExt) and low < s.sweepExt - i_mssMaxExt * aSafe
+            fKillSetup(s, "price extended beyond the sweep low by more than " + str.tostring(i_mssMaxExt, "#.#") + " ATR (sweep failed to reject)")
+        else
+            [mOk, mBar, mLvl, mPost, mPostBar, mProt] = fMssScan(s.side, s.sweepBar, s.sweepExt, s.minMssBar)
+            if mOk
+                [mb, cons] = fDisplacement(s.side, mPostBar, mBar)
+                bool disp = mb >= i_dispATR * aSafe and (i_dispConsec == 0 or cons >= i_dispConsec)
+                if not disp
+                    s.minMssBar := mBar + 1
+                    if i_debug
+                        pushLog("4. LTF MSS Waiting (structure break without displacement - rejected)")
+                else
+                    s.mssBar       := mBar
+                    s.mssLevel     := mLvl
+                    s.swingPost    := mPost
+                    s.swingPostBar := mPostBar
+                    s.protSwing    := mProt
+                    s.phase        := PH_MSS
+                    s.progress     := 5
+                    fStep(s, "MSS Confirmed")
+                    if i_showMss
+                        label.new(mBar, s.side == -1 ? high[math.max(bar_index - mBar, 0)] : low[math.max(bar_index - mBar, 0)], "MSS", xloc.bar_index, yloc.price, color.new(color.black, 100), s.side == -1 ? label.style_label_down : label.style_label_up, fSideColor(s.side), fLblSize())
+                    fire(s.side == 1 ? "mss_bull" : "mss_bear", str.format("{0} | {1} MSS CONFIRMED | Setup #{2} | Sweep {3} | MSS break {4} | HTF FVG {5}-{6} | HTF {7} | LTF {8}", syminfo.ticker, fSideWord(s.side), str.tostring(s.id), str.tostring(s.sweepExt, format.mintick), str.tostring(mLvl, format.mintick), str.tostring(s.fvgBot, format.mintick), str.tostring(s.fvgTop, format.mintick), htfTf, timeframe.period))
+                    pushLog("5. MSS Confirmed")
+                    string why = fBuildEntry(s)
+                    if why == ""
+                        s.phase    := PH_ZONE
+                        s.progress := 6
+                        fStep(s, "Breaker Created")
+                        fStep(s, "Entry Zone Active")
+                        fire(s.side == 1 ? "breaker_bull" : "breaker_bear", str.format("{0} | {1} BREAKER CREATED | Zone {2} ({3}) | Setup #{4} | HTF {5} | LTF {6}", syminfo.ticker, fSideWord(s.side), str.tostring(s.zoneBot, format.mintick) + " - " + str.tostring(s.zoneTop, format.mintick), s.zoneSrc, str.tostring(s.id), htfTf, timeframe.period))
+                        string msgL = syminfo.ticker + " | " + fSideWord(s.side) + " LIMIT ACTIVATED | Entry " + fPx(s.entry) + " | SL " + fPx(s.sl) + " | TP1 " + fPx(s.tp1) + " | TP2 " + fPx(s.tp2) + " | R:R " + str.tostring(s.rr, "#.##") + " | Liquidity " + fPx(s.liqPrice) + " | Sweep " + fPx(s.sweepExt) + " | Zone " + s.zoneSrc + " | HTF " + htfTf + " | LTF " + timeframe.period
+                        fire(s.side == 1 ? "limit_bull" : "limit_bear", msgL)
+                        fDrawZone(s)
+                        fTryFill(s)
+                    else
+                        fire("reject", str.format("{0} | {1} setup #{2} REJECTED by the validation matrix | {3}", syminfo.ticker, fSideWord(s.side), str.tostring(s.id), why))
+                        fKillSetup(s, why)
+    // ---------------- PH_ZONE : waiting for the retracement into the entry zone
+    else if s.phase == PH_ZONE
+        bool   bad = false
+        string why = ""
+        if s.side == -1
+            if close > s.zoneTop + tickSz
+                bad := true
+                why := "close above the bearish breaker zone"
+        else
+            if close < s.zoneBot - tickSz
+                bad := true
+                why := "close below the bullish breaker zone"
+        if not bad and (bar_index > s.zoneSetBar or s.mktEntry) and (s.side == -1 ? high >= s.sl : low <= s.sl)
+            bad := true
+            why := "stop level taken before the entry filled"
+        if bad
+            fKillSetup(s, why)
+        else if i_maxRetrace > 0 and (bar_index - s.zoneSetBar) > i_maxRetrace
+            fKillSetup(s, "maximum retracement age expired")
+        else
+            fTryFill(s)
+    // ---------------- PH_TRADE : SL / TP management
+    else if s.phase == PH_TRADE
+        fManageTrade(s)
+
+fProcessSetups() =>
+    if setups.size() > 0
+        for i = 0 to setups.size() - 1
+            if i < setups.size()
+                Setup s = setups.get(i)
+                if s.phase < PH_DONE
+                    fAdvance(s)
+
+// =============================================================================================
+//  MAIN EXECUTION - every state change happens on a CLOSED bar only (non-repainting)
+// =============================================================================================
+bool barOK = barstate.isconfirmed
+var int  lastSweepSeq = 0
+var int  lastDoneSeq  = 0
+
+if barOK
+    // ------------------------------------------------------------------ HTF candle closed
+    if htfNew
+        int srcIdx = -1
+        if psBar.size() > 0
+            for k = 0 to psBar.size() - 1
+                if srcIdx < 0 and psTime.get(k) >= htfT and psTime.get(k) < htfT + int(htfSec * 1000)
+                    srcIdx := fLiqIdxByPrice(psLvl.get(k), psDir.get(k))
+        pushHtf(htfH, htfL, htfT, srcIdx)
+        int sz   = htfHArr.size()
+        int base = htfN - (sz - 1)
+        // ---- HTF confirmed pivots -> external liquidity
+        int cand = sz - 1 - i_htfMajRight
+        if cand >= i_htfMajLeft
+            int candTime = htfTArr.get(cand)
+            if candTime > htfLastPivTime
+                htfLastPivTime := candTime
+                float ch  = htfHArr.get(cand)
+                float cl2 = htfLArr.get(cand)
+                bool  isH = true
+                bool  isL = true
+                for k = cand - i_htfMajLeft to cand - 1
+                    if htfHArr.get(k) >= ch
+                        isH := false
+                    if htfLArr.get(k) <= cl2
+                        isL := false
+                for k = cand + 1 to cand + i_htfMajRight
+                    if htfHArr.get(k) > ch
+                        isH := false
+                    if htfLArr.get(k) < cl2
+                        isL := false
+                if isH
+                    fRegisterLiq(ch, 1, "HTF Swing High", candTime, base + cand)
+                    htfLastH := ch
+                    htfHb    := false
+                if isL
+                    fRegisterLiq(cl2, -1, "HTF Swing Low", candTime, base + cand)
+                    htfLastL := cl2
+                    htfLb    := false
+        // ---- HTF structure (BOS / CHoCH on HTF)
+        bool hbf = not na(htfLastH) and not na(htfC) and (i_breakConf == "Close" ? htfC > htfLastH : htfH > htfLastH)
+        bool lbf = not na(htfLastL) and not na(htfC) and (i_breakConf == "Close" ? htfC < htfLastL : htfL < htfLastL)
+        if hbf or lbf
+            [hs2, hev2, hhb2, hlb2, hbp2] = fStruct(htfState, htfHb, htfLb, htfLastH, htfLastL, hbf, lbf)
+            htfState := hs2
+            htfHb    := hhb2
+            htfLb    := hlb2
+        // ---- HTF range extremes -> external liquidity
+        int lbN = math.min(i_htfRangeLb, sz)
+        if lbN > 2
+            float rmax  = htfHArr.get(sz - 1)
+            float rmin  = htfLArr.get(sz - 1)
+            int   rmaxI = sz - 1
+            int   rminI = sz - 1
+            for k = sz - lbN to sz - 1
+                if htfHArr.get(k) > rmax
+                    rmax  := htfHArr.get(k)
+                    rmaxI := k
+                if htfLArr.get(k) < rmin
+                    rmin  := htfLArr.get(k)
+                    rminI := k
+            if na(lastRangeHigh) or rmax > lastRangeHigh
+                lastRangeHigh := rmax
+                fRegisterLiq(rmax, 1, "HTF Range High", htfTArr.get(rmaxI), base + rmaxI)
+            if na(lastRangeLow) or rmin < lastRangeLow
+                lastRangeLow := rmin
+                fRegisterLiq(rmin, -1, "HTF Range Low", htfTArr.get(rminI), base + rminI)
+        // ---- HTF FVG detection + lifecycle + stale liquidity management
+        fDetectHtfFvg()
+        fUpdateFvgLifecycle(htfT)
+        fExpireLiq()
+    // ------------------------------------------------------------------ LTF major structure
+    if not na(majPivH)
+        string lbl = na(majLastH) ? "H" : majPivH > majLastH ? "HH" : "LH"
+        pushSw(majHiLst, Sw.new(majPivH, majPivHBar, 1, lbl), 30)
+        majLastH := majPivH
+        majHb    := false
+        if i_ltfExtFall or not i_reqExternal
+            fRegisterLiq(majPivH, 1, "LTF Swing High", time[i_majRight], htfN)
+        if i_showMajSw
+            label.new(majPivHBar, majPivH, lbl, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_down, i_cBear, size.tiny)
+    if not na(majPivL)
+        string lbl = na(majLastL) ? "L" : majPivL < majLastL ? "LL" : "HL"
+        pushSw(majLoLst, Sw.new(majPivL, majPivLBar, -1, lbl), 30)
+        majLastL := majPivL
+        majLb    := false
+        if i_ltfExtFall or not i_reqExternal
+            fRegisterLiq(majPivL, -1, "LTF Swing Low", time[i_majRight], htfN)
+        if i_showMajSw
+            label.new(majPivLBar, majPivL, lbl, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_up, i_cBull, size.tiny)
+    if (not na(majLastH) and (i_breakConf == "Close" ? close > majLastH : high > majLastH)) or (not na(majLastL) and (i_breakConf == "Close" ? close < majLastL : low < majLastL))
+        bool mh = not na(majLastH) and (i_breakConf == "Close" ? close > majLastH : high > majLastH)
+        bool ml = not na(majLastL) and (i_breakConf == "Close" ? close < majLastL : low < majLastL)
+        [ms2, mev2, mhb2, mlb2, mbp2] = fStruct(majState, majHb, majLb, majLastH, majLastL, mh, ml)
+        majState := ms2
+        majHb    := mhb2
+        majLb    := mlb2
+    // ------------------------------------------------------------------ LTF internal structure
+    if not na(intPivH)
+        string lbl = na(intLastH) ? "H" : intPivH > intLastH ? "HH" : "LH"
+        pushSw(intHiLst, Sw.new(intPivH, intPivHBar, 1, lbl), 40)
+        intLastH := intPivH
+        intHb    := false
+        if i_showIntSw
+            label.new(intPivHBar, intPivH, lbl, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_down, i_cNeutral, size.tiny)
+    if not na(intPivL)
+        string lbl = na(intLastL) ? "L" : intPivL < intLastL ? "LL" : "HL"
+        pushSw(intLoLst, Sw.new(intPivL, intPivLBar, -1, lbl), 40)
+        intLastL := intPivL
+        intLb    := false
+        if i_showIntSw
+            label.new(intPivLBar, intPivL, lbl, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_up, i_cNeutral, size.tiny)
+    bool iBrkH = not na(intLastH) and (i_breakConf == "Close" ? close > intLastH : high > intLastH)
+    bool iBrkL = not na(intLastL) and (i_breakConf == "Close" ? close < intLastL : low < intLastL)
+    if iBrkH or iBrkL
+        [is2, iev2, ihb2, ilb2, ibp2] = fStruct(intState, intHb, intLb, intLastH, intLastL, iBrkH, iBrkL)
+        intState := is2
+        intHb    := ihb2
+        intLb    := ilb2
+        if iev2 != 0
+            evBar.push(bar_index)
+            evType.push(iev2)
+            evLevel.push(ibp2)
+            if evBar.size() > 250
+                evBar.shift()
+                evType.shift()
+                evLevel.shift()
+            if i_showIntSw
+                string t = iev2 == 2 ? "BOS" : iev2 == -2 ? "BOS" : "CHoCH"
+                label.new(bar_index, iev2 > 0 ? low - aSafe * 0.4 : high + aSafe * 0.4, t, xloc.bar_index, yloc.price, color.new(color.black, 100), iev2 > 0 ? label.style_label_up : label.style_label_down, iev2 > 0 ? i_cBull : i_cBear, size.tiny)
+    // ------------------------------------------------------------------ engine
+    fDetectSweeps()
+    bool scanNow = htfNew or sweepSeq.get(0) != lastSweepSeq or doneSeq.get(0) != lastDoneSeq
+    if scanNow
+        fCreateSetups()
+        lastSweepSeq := sweepSeq.get(0)
+        lastDoneSeq  := doneSeq.get(0)
+    fProcessSetups()
+    fPruneSetups()
+
+// =============================================================================================
+//  15 / 32 - DASHBOARD
+// =============================================================================================
+fTablePos(string p) =>
+    p == "Top right" ? position.top_right : p == "Top left" ? position.top_left : p == "Bottom right" ? position.bottom_right : p == "Bottom left" ? position.bottom_left : position.middle_right
+
+fOtherPos(string p) =>
+    p == "Top right" or p == "Middle right" ? position.bottom_left : p == "Top left" ? position.bottom_right : p == "Bottom right" ? position.top_left : position.top_right
+
+fDisplayIdx(int side) =>
+    int best      = -1
+    int bestScore = -1
+    if setups.size() > 0
+        for i = 0 to setups.size() - 1
+            Setup s = setups.get(i)
+            if s.side == side
+                int score = s.phase < PH_DONE ? 100000 + s.phase : s.id
+                if score > bestScore
+                    bestScore := score
+                    best      := i
+    best
+
+fNearestLiq(int dir, float ref, bool abovePrice) =>
+    float best = na
+    if liqLst.size() > 0
+        for i = 0 to liqLst.size() - 1
+            Liq q = liqLst.get(i)
+            if q.dir == dir and not q.stale and not q.isSwept
+                if abovePrice and q.price > ref and (na(best) or q.price < best)
+                    best := q.price
+                if not abovePrice and q.price < ref and (na(best) or q.price > best)
+                    best := q.price
+    best
+
+fChainTxt(Setup s) =>
+    (s.progress >= 1 ? "L" : ".") + (s.progress >= 2 ? "F" : ".") + (s.progress >= 3 ? "S" : ".") + (s.progress >= 5 ? "M" : ".") + (s.progress >= 6 ? "B" : ".") + (s.progress >= 7 ? "Z" : ".") + (s.progress >= 8 ? "E" : ".")
+
+var table dash = na
+var table warn = na
+
+if i_showDash and barstate.islast
+    int rows = 18
+    if na(dash)
+        dash := table.new(fTablePos(i_dashPos), 3, rows, border_width = 1, border_color = color.new(color.gray, 70), bgcolor = color.new(color.black, 80))
+    else
+        table.set_position(dash, fTablePos(i_dashPos))
+    txtSize = i_dashSize == "Tiny" ? size.tiny : i_dashSize == "Small" ? size.small : size.normal
+    color hdC = color.new(color.gray, 60)
+    string htfS = htfState == 1 ? "Bullish" : htfState == -1 ? "Bearish" : "Neutral"
+    string ltfS = intState == 1 ? "Bullish" : intState == -1 ? "Bearish" : "Neutral"
+    int fvgB = 0
+    int fvgS = 0
+    if fvgLst.size() > 0
+        for i = 0 to fvgLst.size() - 1
+            Fvg f = fvgLst.get(i)
+            if not f.mitigated and not f.invalid
+                if f.dir == 1
+                    fvgB := fvgB + 1
+                else
+                    fvgS := fvgS + 1
+    float bsl = fNearestLiq(1, close, true)
+    float ssl = fNearestLiq(-1, close, false)
+    int   bi  = fDisplayIdx(1)
+    int   si  = fDisplayIdx(-1)
+    // ---- header
+    table.cell(dash, 0, 0, "VJK-18 ICT MODEL", text_color = color.white, text_size = txtSize, bgcolor = color.new(color.blue, 70))
+    table.cell(dash, 1, 0, "HTF " + htfTf, text_color = color.white, text_size = txtSize, bgcolor = color.new(color.blue, 70))
+    table.cell(dash, 2, 0, "LTF " + timeframe.period, text_color = color.white, text_size = txtSize, bgcolor = color.new(color.blue, 70))
+    table.cell(dash, 0, 1, "HTF Structure", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 1, 1, htfS, text_color = htfState == 1 ? i_cBull : htfState == -1 ? i_cBear : i_cNeutral, text_size = txtSize)
+    table.cell(dash, 2, 1, "", text_size = txtSize)
+    table.cell(dash, 0, 2, "HTF FVG", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 1, 2, "Bull " + str.tostring(fvgB), text_color = i_cBull, text_size = txtSize)
+    table.cell(dash, 2, 2, "Bear " + str.tostring(fvgS), text_color = i_cBear, text_size = txtSize)
+    table.cell(dash, 0, 3, "External Liquidity", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 1, 3, "BSL " + fPx(bsl), text_color = i_cLiq, text_size = txtSize)
+    table.cell(dash, 2, 3, "SSL " + fPx(ssl), text_color = i_cLiq, text_size = txtSize)
+    table.cell(dash, 0, 4, "LTF Structure", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 1, 4, ltfS, text_color = intState == 1 ? i_cBull : intState == -1 ? i_cBear : i_cNeutral, text_size = txtSize)
+    table.cell(dash, 2, 4, "", text_size = txtSize)
+    table.cell(dash, 0, 5, "SETUP", text_color = color.white, text_size = txtSize, bgcolor = color.new(color.gray, 60))
+    table.cell(dash, 1, 5, "BUY", text_color = i_cBull, text_size = txtSize, bgcolor = color.new(color.gray, 60))
+    table.cell(dash, 2, 5, "SELL", text_color = i_cBear, text_size = txtSize, bgcolor = color.new(color.gray, 60))
+    // ---- per direction rows
+    for kk = 0 to 1
+        int side = kk == 0 ? 1 : -1
+        int idx = side == 1 ? bi : si
+        Setup s = na
+        if idx >= 0
+            s := setups.get(idx)
+        bool done = not na(s) and s.phase == PH_DONE
+        color cc  = na(s) ? i_cNeutral : done ? i_cNeutral : fSideColor(side)
+        table.cell(dash, side == 1 ? 1 : 2, 6, na(s) ? "Waiting" : fPhasePublic(s.phase), text_color = cc, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 7, na(s) ? "-" : fPx(s.liqPrice) + " " + (na(s) ? "" : fShort(s.liqKind, 14)), text_color = cc, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 8, na(s) or s.progress < 3 ? "-" : fPx(s.sweepExt), text_color = cc, text_size = txtSize)
+        string fvgTxt = "-"
+        if not na(s) and s.fvgTime > 0
+            int fxi = fFvgByTime(s.fvgTime)
+            fvgTxt := fxi >= 0 ? fvgLst.get(fxi).lcState : "Gone"
+        table.cell(dash, side == 1 ? 1 : 2, 9, fvgTxt, text_color = cc, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 10, na(s) ? "-" : (s.progress >= 5 ? "Confirmed " + fPx(s.mssLevel) : "Waiting"), text_color = cc, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 11, na(s) or s.zoneSrc == "" ? "-" : s.zoneSrc + " " + fPx(s.zoneBot) + "-" + fPx(s.zoneTop), text_color = cc, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 12, na(s) ? "-" : fPx(s.entry), text_color = i_cEntry, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 13, na(s) ? "-" : fPx(s.sl), text_color = i_cSL, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 14, na(s) ? "-" : fPx(s.tp1) + " / " + fPx(s.tp2), text_color = i_cTP, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 15, na(s) ? "-" : str.tostring(s.rr, "#.##"), text_color = cc, text_size = txtSize)
+        table.cell(dash, side == 1 ? 1 : 2, 16, na(s) ? "-" : fChainTxt(s) + (s.outcome == "" ? "" : " " + s.outcome + (s.reject == "" ? "" : ": " + s.reject)), text_color = cc, text_size = txtSize)
+    // ---- row labels
+    table.cell(dash, 0, 6, "State", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 7, "Liquidity", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 8, "Sweep price", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 9, "HTF FVG", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 10, "MSS", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 11, "Entry zone", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 12, "Entry", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 13, "SL", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 14, "TP1 / TP2", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 15, "R:R", text_color = hdC, text_size = txtSize)
+    table.cell(dash, 0, 16, "Chain L F S M B Z E", text_color = hdC, text_size = txtSize)
+    string tfTxt = tfTooClose ? "WARNING: HTF " + htfTf + " is not sufficiently higher than " + timeframe.period + " (ratio " + str.tostring(tfRatio, "#.#") + "x, min " + str.tostring(i_minHtfRatio, "#.#") + "x)" : "TF ratio " + str.tostring(tfRatio, "#.#") + "x  (HTF " + htfTf + " / LTF " + timeframe.period + ")"
+    table.cell(dash, 0, 17, tfTxt, text_color = tfTooClose ? color.orange : color.new(color.gray, 30), text_size = txtSize, text_halign = text.align_left)
+    table.merge_cells(dash, 0, 17, 2, 17)
+    if i_showTfWarn and tfTooClose
+        if na(warn)
+            warn := table.new(position.top_center, 1, 1, border_width = 1, border_color = color.orange, bgcolor = color.new(color.black, 60))
+        table.cell(warn, 0, 0, tfWarnTxt, text_color = color.orange, text_size = size.small)
+
+// =============================================================================================
+//  17 / 34 - DEBUG MODE : the internal decision process, step by step
+// =============================================================================================
+fStepTxt(Setup s, int step) =>
+    bool ok = false
+    string t = ""
+    if not na(s)
+        if step == 1
+            ok := s.progress >= 1
+            t  := "1. External Liquidity Found"
+        else if step == 2
+            ok := s.progress >= 2
+            t  := "2. HTF FVG Found"
+        else if step == 3
+            ok := s.progress >= 3
+            t  := "3. Liquidity Swept"
+        else if step == 4
+            ok := s.progress >= 3 and s.progress < 5
+            t  := "4. LTF MSS Waiting"
+        else if step == 5
+            ok := s.progress >= 5
+            t  := "5. MSS Confirmed"
+        else if step == 6
+            ok := s.progress >= 6
+            t  := "6. Breaker Created"
+        else if step == 7
+            ok := s.progress >= 6
+            t  := "7. Entry Zone Active"
+        else
+            ok := s.progress >= 8
+            t  := "8. Entry Triggered"
+    else
+        if step == 1
+            t := "1. External Liquidity Found"
+        else if step == 2
+            t := "2. HTF FVG Found"
+        else if step == 3
+            t := "3. Liquidity Swept"
+        else if step == 4
+            t := "4. LTF MSS Waiting"
+        else if step == 5
+            t := "5. MSS Confirmed"
+        else if step == 6
+            t := "6. Breaker Created"
+        else if step == 7
+            t := "7. Entry Zone Active"
+        else
+            t := "8. Entry Triggered"
+    t + (ok ? "  OK" : "  ...")
+
+var table dbgT = na
+var table logT = na
+if i_debug and i_debugTable and barstate.islast
+    if na(dbgT)
+        dbgT := table.new(fOtherPos(i_dashPos), 2, 11, border_width = 1, border_color = color.new(color.gray, 70), bgcolor = color.new(color.black, 70))
+    int idxD = fDisplayIdx(intState == 1 ? 1 : -1)
+    Setup ds = na
+    if idxD >= 0
+        ds := setups.get(idxD)
+    table.cell(dbgT, 0, 0, "DEBUG - DECISION PIPELINE (" + (na(ds) ? "idle" : (ds.side == 1 ? "BUY" : "SELL") + " setup #" + str.tostring(ds.id)) + ")", text_color = color.white, text_size = size.tiny, bgcolor = color.new(color.gray, 60))
+    table.merge_cells(dbgT, 0, 0, 1, 0)
+    for st = 1 to 8
+        table.cell(dbgT, 0, st, fStepTxt(ds, st), text_color = color.new(color.silver, 0), text_size = size.tiny, text_halign = text.align_left)
+        bool okSt = false
+        if not na(ds)
+            if st <= 3
+                okSt := ds.progress >= st
+            else if st == 4
+                okSt := ds.progress >= 3 and ds.progress < 5
+            else if st == 5
+                okSt := ds.progress >= 5
+            else if st <= 7
+                okSt := ds.progress >= 6
+            else
+                okSt := ds.progress >= 8
+        table.cell(dbgT, 1, st, okSt ? "OK" : "...", text_color = okSt ? i_cTP : i_cNeutral, text_size = size.tiny)
+    table.cell(dbgT, 0, 9, na(ds) ? "-" : (ds.reject == "" ? (ds.outcome == "" ? "ACTIVE" : ds.outcome) : "INVALIDATED: " + ds.reject), text_color = na(ds) or ds.reject == "" ? i_cNeutral : color.orange, text_size = size.tiny, text_halign = text.align_left)
+    table.merge_cells(dbgT, 0, 9, 1, 9)
+    table.cell(dbgT, 0, 10, "HTF " + htfTf + " | " + str.tostring(htfN) + " closed HTF bars | " + str.tostring(liqLst.size()) + " liquidity levels | " + str.tostring(fvgLst.size()) + " FVGs | " + str.tostring(setups.size()) + " setups", text_color = color.new(color.gray, 20), text_size = size.tiny, text_halign = text.align_left)
+    table.merge_cells(dbgT, 0, 10, 1, 10)
+    // ---- event log
+    if na(logT)
+        logT := table.new(position.bottom_center, 1, i_debugLogN + 1, border_width = 1, border_color = color.new(color.gray, 70), bgcolor = color.new(color.black, 70))
+    table.cell(logT, 0, 0, "EVENT LOG (newest first)", text_color = color.white, text_size = size.tiny, bgcolor = color.new(color.gray, 60), text_halign = text.align_left)
+    for i = 0 to i_debugLogN - 1
+        int li = logMsg.size() - 1 - i
+        table.cell(logT, 0, i + 1, li >= 0 ? str.tostring(logBar.get(li)) + "  " + logMsg.get(li) : "", text_color = color.new(color.silver, 0), text_size = size.tiny, text_halign = text.align_left)
+
+// =============================================================================================
+//  14 - SETUP MARKERS / BACKGROUND
+// =============================================================================================
+bool anyActive = false
+if setups.size() > 0
+    for i = 0 to setups.size() - 1
+        Setup s = setups.get(i)
+        if s.phase > PH_IDLE and s.phase < PH_DONE
+            anyActive := true
+bgcolor(i_bgTint and anyActive ? color.new(i_cEntry, 92) : na, title = "Active setup tint")
+
+// =============================================================================================
+//  16 / 33 - ALERTS
+//  TradingView cannot build alert messages dynamically with alertcondition(), therefore every
+//  event is dispatched through alert() with a fully descriptive message. Create the alert with
+//  "Any alert() function call" and the message below is delivered verbatim.
+// =============================================================================================
+alertOn(string k) =>
+    bool en = false
+    if k == "liq_bsl" or k == "liq_ssl"
+        en := i_alLiq
+    else if k == "sweep_bsl" or k == "sweep_ssl"
+        en := i_alSweep
+    else if k == "fvg_bull" or k == "fvg_bear"
+        en := i_alFvg
+    else if k == "mss_bull" or k == "mss_bear"
+        en := i_alMss
+    else if k == "breaker_bull" or k == "breaker_bear"
+        en := i_alBreaker
+    else if k == "limit_bull" or k == "limit_bear"
+        en := i_alLimit
+    else if k == "entry"
+        en := i_alEntry
+    else if k == "sl"
+        en := i_alSl
+    else if k == "tp1" or k == "tp2"
+        en := i_alTp
+    else if k == "invalid"
+        en := i_alInvalid
+    else if k == "reject"
+        en := i_alRisk
+    en
+
+if evKinds.size() > 0
+    for i = 0 to evKinds.size() - 1
+        if alertOn(evKinds.get(i))
+            alert(evMsgs.get(i), alert.freq_once_per_bar_close)
+    evKinds.clear()
+    evMsgs.clear()
