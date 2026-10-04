@@ -193,7 +193,8 @@ python3 tools/simulate_model.py
 ```
 
 `pine_check.py` catches unbalanced brackets, bad indentation, locals escaping
-their scope, duplicate declarations and calls made before a declaration.
+their scope, duplicate declarations, calls made before a declaration, and the
+v6 block-typing pitfalls that produce `CE10235` (see below).
 
 `simulate_model.py` re-implements the model in Python and runs four tests:
 
@@ -204,6 +205,26 @@ their scope, duplicate declarations and calls made before a declaration.
 4. a setup under the minimum RR must be rejected for that reason.
 
 Keep both files in sync if you change the Pine logic.
+
+### v6 typing rules the checker enforces
+
+Two Pine v6 rules bit this script during development; both are now covered by
+`pine_check.py` and worth knowing before you edit it:
+
+1. **Every block has a type.** The value of an `if`/`else`, `for` or `while`
+   block is the value of the last expression in it. If one branch ends in a call
+   that returns something (`label.new`, `array.get`, `array.remove`,
+   `array.shift`, `array.pop`, `request.security`, …) while a sibling branch or
+   the loop itself is expected to be `void`, the compiler raises
+   `CE10235 — Return type of one of the "if" or "switch" blocks is not
+   compatible with return type of other block(s)`. Keep the tail of every block
+   in a multi-branch chain `void`: end it with an assignment, a `void` call such
+   as `array.push`/`array.set`, or capture the result in a throwaway local
+   (`Liq _dropped = array.remove(liqs, i)`).
+2. **Functions cannot reassign globals.** `liqs := someArray` inside a function
+   is rejected with *"Cannot modify global variable … in function"*. Mutate the
+   array in place (`array.push`, `array.set`, `array.remove`) instead, or return
+   the new array and assign it at the call site.
 
 ## Tuning notes
 
