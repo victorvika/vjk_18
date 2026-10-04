@@ -1289,7 +1289,7 @@ fBestFvg(int side, float sweepPrice, int liqIdx) =>
         for i = 0 to fvgLst.size() - 1
             Fvg f = fvgLst.get(i)
             bool fresh = htfSec <= 0 or (time - f.htfBarTime) <= i_fvgLookback * htfSec * 1000.0
-        if fresh and f.dir == side and not f.mitigated and not f.invalid and not fFvgInUse(f.htfBarTime) and fFvgRelevant(f, sweepPrice, liqIdx)
+            if fresh and f.dir == side and not f.mitigated and not f.invalid and not fFvgInUse(f.htfBarTime) and fFvgRelevant(f, sweepPrice, liqIdx)
                 float d = fFvgDist(sweepPrice, f.top, f.bot)
                 if na(bestD) or d < bestD
                     bestD := d

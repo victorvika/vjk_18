@@ -495,11 +495,138 @@ def main(path):
                 if n < dln:
                     err(n, f"function '{name}' is called on line {n} but defined later (line {dln})")
 
+    # ---------------- block structure: indentation of every physical line ------------------
+    # Pine derives blocks from indentation, and a block body must be exactly one level (4
+    # spaces) deeper than the line that opens it.  An over-indented first line of a body,
+    #         if cond            (indent 8)
+    #                 float d    (indent 16, +8)
+    # is a hard parse error: CE10013 "Mismatched input 'float' expecting set 'end of line
+    # without line continuation".  The same jump also means the block after the opener was
+    # left early (a loop body collapsing into its parent), so it is a logic bug as well.
+    OPENER = re.compile(r"^(if\b|else\b|for\b|while\b|switch\b|type\b)")
+    FUNC_HDR = re.compile(r"^(?:method\s+)?(?:(?:[A-Za-z_][A-Za-z0-9_.]*)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
+    TOKEN = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)")
+    phys = []                                  # (lineno, indent, code) for every non-blank line
+    for n, raw in enumerate(lines, 1):
+        code = blank_strings(strip_comment(raw)).rstrip()
+        if code.strip():
+            phys.append((n, len(code) - len(code.lstrip(" ")), code))
+
+    levels = [0]
+    for i, (n, ind, code) in enumerate(phys):
+        if ind % 4:
+            err(n, f"indentation of {ind} spaces is not a multiple of 4")
+        opens_here = code.endswith("=>") or bool(OPENER.match(code.strip()))
+        if i == 0:
+            if ind:
+                err(n, "the first code line must not be indented")
+            continue
+        pn, pind, pcode = phys[i - 1]
+        prev_opens = pcode.endswith("=>") or bool(OPENER.match(pcode.strip()))
+        if ind > pind:
+            if not prev_opens:
+                err(n, f"line is indented deeper than line {pn}, which opens no block")
+            if ind != pind + 4:
+                err(n, f"block body is indented {ind - pind} spaces past line {pn} (Pine requires exactly 4)")
+            levels.append(ind)
+        elif ind < pind:
+            while len(levels) > 1 and levels[-1] > ind:
+                levels.pop()
+            if levels[-1] != ind:
+                err(n, f"dedent to column {ind} does not line up with an open block level {levels}")
+        if prev_opens and ind <= pind:
+            err(pn, f"line {pn} opens a block but line {n} is not indented deeper")
+    if phys:
+        ln, ind, code = phys[-1]
+        if code.endswith("=>") or OPENER.match(code.strip()):
+            err(ln, "the last line of the file opens a block but the file ends there")
+
+    # ---------------- local variable scope -------------------------------------------------
+    # A variable declared inside a block only exists inside that block.  Using it in the
+    # enclosing or a sibling block is "Undeclared identifier" in Pine, and usually a bug too
+    # (a value that was meant to be accumulated in a loop, read after the loop, ...).
+    TYPE_WORD = (r"(?:var\s+|varip\s+)?(?:float|int|bool|string|color|line|label|box|table|"
+                 r"polyline|linefill|array<[^>]+>|matrix<[^>]+>|map<[^>]+>|[A-Z][A-Za-z0-9_]*)")
+    DECL_TYPED = re.compile(TYPE_WORD + r"\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)(?!=)")
+    DECL_BARE = re.compile(r"([a-z_][A-Za-z0-9_]*)\s*=(?!=)")
+
+    globals_at_zero = set()
+    for n, ind, code in phys:
+        if ind:
+            continue
+        st = code.strip()
+        m = FUNC_HDR.match(st)
+        if m and st.endswith("=>"):
+            globals_at_zero.add(m.group(1))
+        m = re.match(r"(?:var\s+|varip\s+|const\s+|(?:[A-Za-z_][\w<>.]*)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)(?!=)", st)
+        if m:
+            globals_at_zero.add(m.group(1))
+        m = re.match(r"type\s+([A-Za-z_][A-Za-z0-9_]*)", st)
+        if m:
+            globals_at_zero.add(m.group(1))
+
+    scopes = [(-1, 0)]        # (indent of the line that opened the block, scope id); -1 = global
+    scope_decls = defaultdict(set)
+    all_locals, local_decl_line = set(), {}
+    sid_seq = 0
+    for n, ind, code in phys:
+        params = set()
+        if code.endswith("=>"):
+            m = FUNC_HDR.match(code.strip())
+            if m:
+                for pm in split_args(m.group(2)):
+                    parts = pm.split()
+                    if parts:
+                        params.add(parts[-1])
+        if ind == 0:
+            scopes = [(-1, 0)]
+            sid, here = 0, set(params)
+        else:
+            while len(scopes) > 1 and scopes[-1][0] >= ind:
+                scopes.pop()
+            sid, here = scopes[-1][1], set()
+        for m in DECL_TYPED.finditer(code):
+            here.add(m.group(1))
+        m = DECL_BARE.match(code.strip())
+        if m and m.group(1) not in RESERVED and m.group(1) not in BUILTIN_NAMESPACES:
+            here.add(m.group(1))
+        m = re.match(r"\[([^\]]*)\]\s*=", code.strip())      # tuple destructuring: [a, b] = f()
+        if m:
+            for part in split_args(m.group(1)):
+                parts = part.split()
+                if parts and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", parts[-1]):
+                    here.add(parts[-1])
+        for nm in here:
+            scope_decls[sid].add(nm)
+            if nm not in globals_at_zero:
+                all_locals.add(nm)
+                local_decl_line.setdefault(nm, n)
+        visible = set()
+        for _, s2 in scopes:
+            visible |= scope_decls[s2]
+        for m in TOKEN.finditer(code):
+            t = m.group(1)
+            if (t in here or t in visible or t in RESERVED or t in globals_at_zero
+                    or t in BUILTIN_NAMESPACES or t in BUILTIN_FUNCS or t in funcs or t in udt):
+                continue
+            if t in all_locals:
+                err(n, f"'{t}' is declared at line {local_decl_line.get(t, 0)} inside a narrower "
+                       f"block and used here, outside its scope")
+        # a line that opens a block starts a new scope for the lines indented under it
+        if code.endswith("=>") or OPENER.match(code.strip()):
+            sid_seq += 1
+            scopes.append((ind, sid_seq))
+            scope_decls[sid_seq] |= params
+            m = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", code.strip())
+            if m:                                   # the loop counter lives in the loop body
+                scope_decls[sid_seq].add(m.group(1))
+
     # ---------------- report ----------------
     print(f"file: {path}")
     print(f"lines: {len(lines)}   logical lines: {len(logical)}")
     print(f"user functions: {len(funcs)}   user types: {len(udt)}")
     print(f"types: {', '.join(sorted(udt))}")
+    print("checks: 18 rules (structure, declarations, calls, types, lookahead, indentation, scope)")
     print()
     if ERRORS:
         print(f"ERRORS ({len(ERRORS)}):")

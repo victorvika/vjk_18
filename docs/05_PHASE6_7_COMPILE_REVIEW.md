@@ -1,20 +1,41 @@
 # PHASE 6 — COMPILE / ERROR REVIEW · PHASE 7 — RULE-BY-RULE AUDIT
 
-File: `pine/VJK18_ICT_Model.pine` · Pine Script **v6** · 2 160 lines · 58 user functions · 4 user types
+File: `pine/VJK18_ICT_Model.pine` · Pine Script **v6** · 2 267 lines · 58 user functions · 4 user types
 (`Liq`, `Fvg`, `Sw`, `Setup`) · 115 inputs in 17 groups · 18 alert event kinds.
 
 There is no Pine compiler available in this repository, so the review was done with a purpose-built static
 analyzer (`tools/pine_check.py`) plus a manual read-through of the whole file, plus the official Pine v6
 reference for every built-in call whose argument order cannot be checked locally.
 
-**Post-delivery fix 2 (reported from the editor, CE10013):** the second error report pointed at an `if` line followed by a
-declaration line. Root cause: the paste was an *older draft*, and the file at that time contained lines up to **1 710
-characters** — exactly the kind of line that gets truncated or wrapped when it travels through a chat window or a mobile
-clipboard, which produces "Mismatching input … expecting set 'end of line without line continuation'".
-The whole script was therefore reformatted: **no line is longer than 169 characters**, every statement lives on a single
-physical line, no continuation lines exist at all, and checks 13-16 above were added so neither the length nor the
-continuation pattern can come back. The longest lines are now the `input.*` declarations (~170 chars), which are plain,
-ASCII, single-expression lines.
+**Post-delivery fix 3 (reported from the editor, CE10013 — a real bug, found and fixed):** the reports pointed at an `if`
+line followed by a `float …` declaration line. The cause was not the paste: in `fBestFvg()` the `if fresh and …` line sat
+one indentation level too shallow, so the declaration under it was indented **8 spaces past its parent** (`if` at 8 spaces,
+`float d = …` at 16 instead of 12). Pine requires a block body to sit **exactly one level (4 spaces)** past the line that
+opens it; the parser stops at the first token of the over-indented line and reports
+`Mismatched input "float" expecting set "end of line without line continuation" (CE10013)`.
+The same mis-indentation also ended the `for` loop one line early, so the "nearest relevant unused FVG" search read
+`f`, `fresh` and `d` from outside the block that declared them — it was a logic bug as well as a syntax error.
+It had been present in the file since the first delivery (see the git history: one hit in every revision, always this line).
+
+Fixed by re-indenting that line to 12 spaces, and **two permanent analyzer rules** were added so the class cannot come back:
+
+* **check 17 — block structure.** Every block body must be indented exactly 4 spaces past the line that opens it, a dedent
+  must land on a level that is actually open, no line may be indented deeper than a line that opens no block, and an
+  opener may not be left without a body. This is the rule that reproduces CE10013 before TradingView sees it.
+* **check 18 — local scope.** A variable declared inside a block may only be used inside that block; the rule builds the
+  real block tree (including `for` counters, function parameters and `[a, b] = f()` tuple declarations) and reports every
+  use of a narrower-block variable from an enclosing or sibling block — Pine's "Undeclared identifier", and usually a bug.
+
+`tools/test_pine_check.py` keeps three regression cases for these two rules (correct code passes, an 8→16 jump is
+reported, an out-of-scope use is reported): `python3 tools/test_pine_check.py` → `3/3 regression cases pass`.
+
+**Post-delivery fix 2 (hardening after the same CE10013 reports):** independent of the real bug above, the second report
+showed that the file contained lines up to **1 710 characters**, and that the code pasted into the editor was an older
+draft. Long lines are the classic victim of chat windows and mobile clipboards, so the whole script was reformatted:
+**no line is longer than 169 characters**, every statement lives on a single physical line, and no continuation lines
+exist at all, which also makes the block structure visible at a glance. Checks 13-16 were added at the same time so
+neither the length nor the continuation pattern can come back. The longest lines are the `input.*` declarations
+(~170 chars), which are plain, ASCII, single-expression lines.
 
 The most reliable way to move the file into TradingView is to copy it from the repository's *Raw* view rather than from a
 chat window (GitHub → the file → **Raw** → select all → copy).
@@ -34,7 +55,9 @@ the first load.
 ```
 $ python3 tools/pine_check.py pine/VJK18_ICT_Model.pine
 file: pine/VJK18_ICT_Model.pine
-lines: 2161   user functions: 58   user types: 4
+lines: 2267   logical lines: 2267
+user functions: 58   user types: 4
+checks: 18 rules (structure, declarations, calls, types, lookahead, indentation, scope)
 ERRORS: none
 WARNINGS: none
 ```
@@ -53,10 +76,12 @@ WARNINGS: none
 | 10 | no leftover tokens after a constructor call | type errors |
 | 11 | no typed function declarations (`string f(x) =>` is the CE10152 error class) | "'string' is not a valid method keyword" |
 | 12 | no type field or variable named after a reserved word / built-in namespace, and no namespace used as a type (`extend x = …`) | "'x' is not a valid type keyword" |
-| 13 | no line longer than 190 characters (175 recommended) | copy/paste corruption, CE10013-style errors |
+| 13 | no line longer than 190 characters (175 recommended; current maximum 169) | copy/paste corruption |
 | 14 | every statement is complete on one physical line (no continuation guessing) | "Mismatching input … expecting end of line without line continuation" |
 | 15 | no variable declared twice in the same local scope | "Variable 'x' already declared" |
 | 16 | every `input.string` default belongs to its own `options` list, and every `==` comparison uses one of those options | dead branches / inputs that silently do nothing |
+| 17 | block structure: body indented exactly 4 spaces past its opener, dedents land on an open level, no opener without a body | **the CE10013 error class** — TradingView stops at the first token of a wrongly indented line |
+| 18 | a variable declared inside a block is never used outside it (block tree built from indentation, parameters, loop counters and tuple declarations) | "Undeclared identifier", and silent logic bugs when a loop body ends a line early |
 
 Additional structural guarantees checked manually across the file:
 
