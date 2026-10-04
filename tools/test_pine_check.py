@@ -53,12 +53,30 @@ fSum() =>
 plot(fSum())
 '''
 
+# A declaration whose right-hand side mentions its own name: the name does not exist yet.
+# A blanket "replace all" rename produces exactly this (color lcBg = color.new(...) -> lcBg).
+BAD_SELFREF = '''//@version=6
+indicator("t")
+color lcBg = lcBg
+plot(close, color = lcBg)
+'''
+
+# A name that is used but never declared anywhere.
+BAD_UNDECLARED = '''//@version=6
+indicator("t")
+plot(close, color = myColor)
+'''
+
 CASES = [
     ("correct code passes", GOOD, []),
     ("8 -> 16 indent jump is reported", BAD_INDENT,
      ["indented ", "spaces past line"]),
     ("use outside the declaring block is reported", BAD_SCOPE,
      ["outside its scope"]),
+    ("declaration referring to itself is reported", BAD_SELFREF,
+     ["its own initialiser"]),
+    ("undeclared identifier is reported", BAD_UNDECLARED,
+     ["undeclared identifier 'myColor'"]),
 ]
 
 

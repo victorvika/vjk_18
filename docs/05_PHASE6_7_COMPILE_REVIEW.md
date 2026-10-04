@@ -7,6 +7,17 @@ There is no Pine compiler available in this repository, so the review was done w
 analyzer (`tools/pine_check.py`) plus a manual read-through of the whole file, plus the official Pine v6
 reference for every built-in call whose argument order cannot be checked locally.
 
+**Post-delivery fix 4 (reported from the editor, CE10272 — a real bug, found and fixed):**
+`color lcBg = lcBg` — the declaration of the shared label background referred to itself, so `lcBg` was declared
+nowhere and every one of its 19 uses failed. Cause: freeing the 20 repeated `color.new(color.black, 100)` calls
+was done with a blanket text replacement, which also rewrote the right-hand side of the declaration itself.
+It is the classic search/replace accident, and the static analyzer did not have a rule for it, so it passed a
+file with an undeclared identifier. Fixed to `color lcBg = color.new(color.black, 100)`, and **check 19** was
+added: with strings, comments and hex colours masked out, every identifier that is not a call, a member access
+or an assignment target must resolve to a declaration, a keyword, a namespace, a built-in function or a built-in
+series variable — and a declaration may not mention its own name on the right-hand side. That rule now reproduces
+CE10272 before TradingView sees it, and the regression suite covers both shapes.
+
 **Post-delivery fix 3 (reported from the editor, CE10013 — a real bug, found and fixed):** the reports pointed at an `if`
 line followed by a `float …` declaration line. The cause was not the paste: in `fBestFvg()` the `if fresh and …` line sat
 one indentation level too shallow, so the declaration under it was indented **8 spaces past its parent** (`if` at 8 spaces,
@@ -26,8 +37,9 @@ Fixed by re-indenting that line to 12 spaces, and **two permanent analyzer rules
   real block tree (including `for` counters, function parameters and `[a, b] = f()` tuple declarations) and reports every
   use of a narrower-block variable from an enclosing or sibling block — Pine's "Undeclared identifier", and usually a bug.
 
-`tools/test_pine_check.py` keeps three regression cases for these two rules (correct code passes, an 8→16 jump is
-reported, an out-of-scope use is reported): `python3 tools/test_pine_check.py` → `3/3 regression cases pass`.
+`tools/test_pine_check.py` keeps five regression cases (correct code passes, an 8→16 jump is reported, an
+out-of-scope use is reported, a self-referential declaration is reported, an undeclared identifier is reported):
+`python3 tools/test_pine_check.py` → `5/5 regression cases pass`.
 
 **Post-delivery fix 2 (hardening after the same CE10013 reports):** independent of the real bug above, the second report
 showed that the file contained lines up to **1 710 characters**, and that the code pasted into the editor was an older
@@ -57,7 +69,7 @@ $ python3 tools/pine_check.py pine/VJK18_ICT_Model.pine
 file: pine/VJK18_ICT_Model.pine
 lines: 2267   logical lines: 2267
 user functions: 58   user types: 4
-checks: 18 rules (structure, declarations, calls, types, lookahead, indentation, scope)
+checks: 19 rules (structure, declarations, calls, types, lookahead, indentation, scope)
 ERRORS: none
 WARNINGS: none
 ```
@@ -82,6 +94,7 @@ WARNINGS: none
 | 16 | every `input.string` default belongs to its own `options` list, and every `==` comparison uses one of those options | dead branches / inputs that silently do nothing |
 | 17 | block structure: body indented exactly 4 spaces past its opener, dedents land on an open level, no opener without a body | **the CE10013 error class** — TradingView stops at the first token of a wrongly indented line |
 | 18 | a variable declared inside a block is never used outside it (block tree built from indentation, parameters, loop counters and tuple declarations) | "Undeclared identifier", and silent logic bugs when a loop body ends a line early |
+| 19 | every identifier resolves (calls excluded - check 3; members, named arguments and assignment targets excluded), and no declaration mentions its own name on the right-hand side | **CE10272 "Undeclared identifier"** - typos, misses after a rename, self-referential declarations |
 
 Additional structural guarantees checked manually across the file:
 

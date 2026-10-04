@@ -15,6 +15,11 @@ matter most for a script of this size:
   8. history operator applied to objects (illegal in Pine)
   9. global scalar assignment from inside a user function (illegal in Pine)
  10. duplicate declarations in the same scope
+ 11-16. typed function headers, reserved-word names, namespace-as-type, line length,
+        single-line statements, input default/option consistency
+ 17. block structure (body indented exactly 4 spaces past its opener) - CE10013
+ 18. local scope (no use of a narrower-block variable outside its block)
+ 19. every identifier resolves (undeclared identifier) - CE10272
 
 Usage:  python3 tools/pine_check.py pine/VJK18_ICT_Model.pine
 """
@@ -93,6 +98,25 @@ def strip_comment(line: str) -> str:
             break
         else:
             out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def mask_literals(line: str) -> str:
+    """blank string-literal contents AND trailing comments with spaces, keeping length"""
+    out = list(line)
+    in_str, i = False, 0
+    while i < len(out):
+        ch = out[i]
+        if ch == '"' and (i == 0 or line[i - 1] != '\\'):
+            in_str = not in_str
+            out[i] = " "
+        elif in_str:
+            out[i] = " "
+        elif ch == "/" and i + 1 < len(out) and out[i + 1] == "/":
+            for j in range(i, len(out)):
+                out[j] = " "
+            break
         i += 1
     return "".join(out)
 
@@ -621,12 +645,92 @@ def main(path):
             if m:                                   # the loop counter lives in the loop body
                 scope_decls[sid_seq].add(m.group(1))
 
+    # ---------------- every identifier must resolve (CE10272 "Undeclared identifier") ------
+    # The strongest single check: with strings, comments and hex colours masked out, every
+    # identifier that is not a call (check 3), not a member access (preceded by "."), not an
+    # assignment target or named argument (followed by "=" / ":=") must be a known declaration,
+    # a Pine keyword, a namespace, a built-in function or a built-in series variable.
+    # This is what catches a declaration whose right-hand side references itself, a rename that
+    # missed a use, or any typo in a variable name.
+    BARE_BUILTINS = {
+        "open", "high", "low", "close", "volume", "time", "time_close", "time_tradingday",
+        "hl2", "hlc3", "ohlc4", "hlcc4", "bar_index", "last_bar_index", "timenow",
+        "na", "true", "false", "dayofweek", "syminfo", "timeframe", "strategy", "ticker",
+    }
+    known_all = set()
+    for n, raw in enumerate(lines, 1):
+        code = mask_literals(raw).strip()
+        if not code:
+            continue
+        for m in re.finditer(TYPE_WORD + r"\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)(?!=)", code):
+            known_all.add(m.group(1))
+        m = re.match(r"([a-z_][A-Za-z0-9_]*)\s*=(?!=)", code)
+        if m:
+            known_all.add(m.group(1))
+        m = re.match(r"\[([^\]]*)\]\s*=", code)
+        if m:
+            for part in split_args(m.group(1)):
+                parts = part.split()
+                if parts:
+                    known_all.add(parts[-1])
+        m = FUNC_HDR.match(code)
+        if m and code.endswith("=>"):
+            known_all.add(m.group(1))
+            for part in split_args(m.group(2)):
+                parts = part.split()
+                if parts:
+                    known_all.add(parts[-1])
+        m = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", code)
+        if m:
+            known_all.add(m.group(1))
+        m = re.match(r"type\s+([A-Za-z_][A-Za-z0-9_]*)", code)
+        if m:
+            known_all.add(m.group(1))
+    UNDECLARED_TOKEN = re.compile(r"(?<![\w.#])([A-Za-z_][A-Za-z0-9_]*)")
+    MASKED = [mask_literals(l) for l in lines]
+    undeclared = {}
+    for n, code in enumerate(MASKED, 1):
+        for m in UNDECLARED_TOKEN.finditer(code):
+            t = m.group(1)
+            rest = code[m.end():]
+            if re.match(r"\s*[(=]", rest) or re.match(r"\s*:=", rest) or rest.startswith("."):
+                continue                                   # call / target / named arg / member
+            if (t in known_all or t in RESERVED or t in BUILTIN_NAMESPACES
+                    or t in BUILTIN_FUNCS or t in BARE_BUILTINS or t in funcs or t in udt):
+                continue
+            undeclared.setdefault(t, n)
+    for t, n in sorted(undeclared.items(), key=lambda kv: kv[1]):
+        err(n, f"undeclared identifier '{t}' (declared nowhere, or the declaration refers to itself)")
+
+    # a declaration must not mention the name it declares on the right-hand side: that name does
+    # not exist yet.  This is exactly what a blanket search/replace produces, e.g. after renaming
+    # color.new(color.black, 100) to lcBg the declaration became "color lcBg = lcBg" (CE10272).
+    for n, raw in enumerate(lines, 1):
+        st = mask_literals(raw).strip()
+        if not st:
+            continue
+        decls = []
+        m = re.match(TYPE_WORD + r"\s+([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.*)$", st)
+        if not m:
+            m = re.match(r"(?:var\s+|varip\s+|const\s+)?([a-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.*)$", st)
+        if m:
+            decls.append((m.group(1), m.group(2)))
+        m = re.match(r"\[([^\]]*)\]\s*=(?!=)\s*(.*)$", st)
+        if m:
+            for part in split_args(m.group(1)):
+                parts = part.split()
+                if parts:
+                    decls.append((parts[-1], m.group(2)))
+        for name, rhs in decls:
+            if re.search(r"(?<![\w.])" + re.escape(name) + r"(?![\w])", rhs):
+                err(n, f"'{name}' is used in its own initialiser - it is not declared yet (CE10272)")
+
     # ---------------- report ----------------
     print(f"file: {path}")
     print(f"lines: {len(lines)}   logical lines: {len(logical)}")
     print(f"user functions: {len(funcs)}   user types: {len(udt)}")
     print(f"types: {', '.join(sorted(udt))}")
-    print("checks: 18 rules (structure, declarations, calls, types, lookahead, indentation, scope)")
+    print("checks: 19 rules (structure, declarations, calls, types, lookahead, indentation, scope)")
     print()
     if ERRORS:
         print(f"ERRORS ({len(ERRORS)}):")

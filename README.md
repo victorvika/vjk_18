@@ -89,12 +89,13 @@ setup invalidated · setup rejected by the validation matrix.
   is exposed as an **input**, documented in `docs/01 §1.7` and `docs/02`.
 * No Pine compiler is available outside TradingView, so `docs/05_PHASE6_7_COMPILE_REVIEW.md` §6.3 lists the
   handful of things to confirm on the first load (built-in signatures, `max_bars_back`, execution time on very
-  long histories). Everything the static analyzer can prove is verified and clean: **18 checks** covering brackets,
+  long histories). Everything the static analyzer can prove is verified and clean: **19 checks** covering brackets,
   **block structure (every body exactly 4 spaces past its opener — the CE10013 error class)**,
   **local scope (no variable used outside the block that declares it)**, undeclared identifiers, argument counts
   for every function **and every type constructor**, field existence, function/global declaration order, lookahead
   misuse, loops over empty arrays, object leaks, typed function declarations (CE10152), reserved-word names,
   namespace-as-type, line length, single-line statements, duplicate declarations and input default/option
-  consistency. `python3 tools/test_pine_check.py` keeps regression cases for the two structural rules.
+  consistency, plus **every identifier must resolve (CE10272)**. `python3 tools/test_pine_check.py` keeps
+  regression cases for the structural, scope and declaration rules.
 * A permanent trading edge is not claimed. The value of this repository is a faithful, auditable and
   reproducible encoding of the model, plus the tooling to keep it that way.
