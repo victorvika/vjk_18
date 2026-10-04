@@ -1,0 +1,374 @@
+// =================================================================================================
+//  SMART RISK A+ TRADING MODEL                                                        Pine Script v6
+// -------------------------------------------------------------------------------------------------
+//  The model, step by step:
+//
+//    1. HTF (1H) : trend bias + valid Liquidity Sweep (LS).
+//                  A valid LS = a candle wicks through a major swing high/low but CLOSES back
+//                  inside the range, and the following candles immediately reverse, keep closing
+//                  inside the range and never break the wick of the sweep candle.
+//    2. LTF (5M) : Market Structure Shift (MSS) in the direction of the HTF sweep.
+//    3. LTF (5M) : a regular Fair Value Gap that gets completely disrespected (price breaks and
+//                  closes strongly through it without reacting) -> Inversed FVG (IFVG).
+//    4. LTF (5M) : entry when price has left the flipped zone and then retraces back to tap its 50%
+//                  Consequent Encroachment (CE).
+//    5. Risk     : SL just beyond the extreme swing formed before the MSS.
+//                  TP = 1:5 when the trade is with the HTF trend, 1:2.5 - 1:3 when counter-trend.
+//
+//  Everything is evaluated on closed HTF / LTF candles, so nothing repaints.
+//  Styling: transparent thin dashed zones, dotted CE line, short dashed TP/SL lines and tiny
+//  label.style_none text placed above/below the bars - price action is never covered.
+// =================================================================================================
+
+//@version=6
+indicator("Smart Risk A+ Trading Model", shorttitle="SR A+", overlay=true,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ======================================== INPUTS ================================================
+string G_HTF   = "1. Higher Time Frame  -  Liquidity Sweep"
+string G_LTF   = "2. Lower Time Frame  -  MSS / IFVG / CE"
+string G_RISK  = "3. Risk Management"
+string G_STYLE = "4. Style"
+
+// --- HTF ---
+string i_htfTF    = input.timeframe("60", "Higher timeframe", options=["15", "30", "60", "120", "240", "1D"],
+     group=G_HTF, tooltip="Timeframe used for the trend bias and the liquidity sweep. The chart itself is the LTF (5 min by default).")
+int    i_swingLen = input.int(10, "Major swing length (HTF)", minval=2, maxval=50, group=G_HTF,
+     tooltip="Fractal length that defines the major swing highs / lows a candle can sweep.")
+int    i_confirm  = input.int(2, "Sweep confirmation bars", minval=1, maxval=5, group=G_HTF,
+     tooltip="Candles after the sweep that must close back inside the range, without breaking the wick of the sweep candle, to validate the LS.")
+int    i_trendLen = input.int(200, "HTF trend EMA length", minval=1, group=G_HTF,
+     tooltip="HTF close vs. this EMA decides whether a trade is with or against the trend (R:R choice).")
+
+// --- LTF ---
+int    i_ltfSwing = input.int(5, "Swing length (LTF)", minval=1, maxval=30, group=G_LTF,
+     tooltip="Fractal length used to detect the Market Structure Shift.")
+float  i_disp     = input.float(0.5, "FVG disrespect strength (x ATR)", minval=0.0, maxval=5.0, step=0.1,
+     group=G_LTF, tooltip="Minimum body size, in ATR, of the candle that engulfs the whole Fair Value Gap and closes beyond it (no reaction).")
+
+// --- Risk ---
+float  i_rrWith    = input.float(5.0, "R:R with the HTF trend", minval=1.0, step=0.5, group=G_RISK)
+float  i_rrAgainst = input.float(3.0, "R:R against the HTF trend", minval=1.0, step=0.5, group=G_RISK,
+     tooltip="Maximum target for counter-trend trades (1:2.5 - 1:3).")
+float  i_slBuf     = input.float(0.10, "SL buffer beyond the swing (x ATR)", minval=0.0, maxval=2.0, step=0.05, group=G_RISK)
+int    i_fwdBars   = input.int(12, "TP / SL line length (bars)", minval=2, maxval=60, group=G_RISK)
+
+// --- Style (classic, muted) ---
+color  i_cBull = input.color(#4A7C74, "Bullish", group=G_STYLE)
+color  i_cBear = input.color(#A86A6A, "Bearish", group=G_STYLE)
+color  i_cNeut = input.color(#6B7A8F, "Neutral / CE / labels", group=G_STYLE)
+color  i_cTP   = input.color(#4A7C74, "Take profit", group=G_STYLE)
+color  i_cSL   = input.color(#A86A6A, "Stop loss", group=G_STYLE)
+int    i_keep  = input.int(12, "Recent drawings kept on chart", minval=1, maxval=200, group=G_STYLE)
+
+// ============================ 1. HTF  -  LIQUIDITY SWEEP ========================================
+// Closed HTF candles only (lookahead_off -> no repainting).
+[htfO, htfH, htfL, htfC, htfTC] = request.security(syminfo.tickerid, i_htfTF,
+     [open, high, low, close, time_close], lookahead = barmerge.lookahead_off)
+bool htfUp     = request.security(syminfo.tickerid, i_htfTF, close > ta.ema(close, i_trendLen),
+     lookahead = barmerge.lookahead_off)
+bool newHtfBar = not na(htfTC) and nz(htfTC) != nz(htfTC[1])
+
+// Fractal helpers over the rolling array of HTF candles.
+f_winMax(array<float> a, int idx, int len) =>
+    float m = array.get(a, idx)
+    for k = 1 to len
+        m := math.max(m, array.get(a, idx - k))
+        m := math.max(m, array.get(a, idx + k))
+    m
+
+f_winMin(array<float> a, int idx, int len) =>
+    float m = array.get(a, idx)
+    for k = 1 to len
+        m := math.min(m, array.get(a, idx - k))
+        m := math.min(m, array.get(a, idx + k))
+    m
+
+var array<float> hArr = array.new<float>(0)     // rolling HTF highs
+var array<float> lArr = array.new<float>(0)     // rolling HTF lows
+var float htfSH   = na                          // active major swing high
+var float htfSL   = na                          // active major swing low
+var int   pendDir = 0                           // pending sweep: 1 = low swept, -1 = high swept
+var float pendLvl = na                          // swept swing level
+var float pendWick= na                          // wick extreme of the sweep candle
+var int   pendCnt = 0                           // confirmed candles so far
+
+int lsDir = 0                                   // +1 bullish LS, -1 bearish LS (this bar only)
+
+if newHtfBar
+    array.push(hArr, htfH)
+    array.push(lArr, htfL)
+    if array.size(hArr) > 2 * i_swingLen + 5
+        array.shift(hArr)
+        array.shift(lArr)
+
+    // --- major swing highs / lows (fractal, confirmed with a lag -> no lookahead) ---
+    int n   = array.size(hArr)
+    int idx = n - 1 - i_swingLen
+    if idx >= i_swingLen
+        if array.get(hArr, idx) == f_winMax(hArr, idx, i_swingLen)
+            htfSH := array.get(hArr, idx)
+        if array.get(lArr, idx) == f_winMin(lArr, idx, i_swingLen)
+            htfSL := array.get(lArr, idx)
+
+    // --- (a) validate a pending sweep with the HTF candle that just closed ---
+    if pendDir != 0
+        bool reversed = pendDir == 1 ? htfC > htfO : htfC < htfO
+        bool inside   = pendDir == 1 ? (htfC > pendLvl and htfL >= pendWick) : (htfC < pendLvl and htfH <= pendWick)
+        bool ok = pendCnt == 0 ? (reversed and inside) : inside   // first candle must reverse
+        if ok
+            pendCnt += 1
+            if pendCnt >= i_confirm
+                lsDir   := pendDir
+                pendDir := 0
+                pendCnt := 0
+        else
+            pendDir := 0                        // wick broken or no reversal -> invalid sweep
+            pendCnt := 0
+
+    // --- (b) look for a fresh sweep on the HTF candle that just closed ---
+    //          wick through the level, close back inside the range
+    if not na(htfSL) and htfL < htfSL and htfC > htfSL
+        pendDir  := 1
+        pendLvl  := htfSL
+        pendWick := htfL
+        pendCnt  := 0
+    else if not na(htfSH) and htfH > htfSH and htfC < htfSH
+        pendDir  := -1
+        pendLvl  := htfSH
+        pendWick := htfH
+        pendCnt  := 0
+
+// ============================== DRAWING HOUSEKEEPING ============================================
+var array<label> lblArr = array.new<label>(0)
+var array<box>   boxArr = array.new<box>(0)
+var array<line>  lneArr = array.new<line>(0)
+
+f_trimLabels(array<label> a) =>
+    while array.size(a) > i_keep
+        label lb = array.shift(a)
+        if not na(lb)
+            label.delete(lb)
+
+f_trimBoxes(array<box> a) =>
+    while array.size(a) > i_keep
+        box bx = array.shift(a)
+        if not na(bx)
+            box.delete(bx)
+
+f_trimLines(array<line> a) =>
+    while array.size(a) > i_keep
+        line ln = array.shift(a)
+        if not na(ln)
+            line.delete(ln)
+
+// ================ 2 / 3 / 4. LTF  -  MSS / IFVG / CE ENTRY ======================================
+float atr     = ta.atr(14)
+float pivotHi = ta.pivothigh(i_ltfSwing, i_ltfSwing)
+float pivotLo = ta.pivotlow(i_ltfSwing, i_ltfSwing)
+
+var float lastPH    = na
+var int   lastPHBar = na
+var float lastPL    = na
+var int   lastPLBar = na
+if not na(pivotHi)
+    lastPH    := pivotHi
+    lastPHBar := bar_index - i_ltfSwing
+if not na(pivotLo)
+    lastPL    := pivotLo
+    lastPLBar := bar_index - i_ltfSwing
+
+// regular Fair Value Gaps (3 candle patterns)
+bool  bullFvg = not na(high[2]) and low  > high[2]
+bool  bearFvg = not na(low[2])  and high < low[2]
+float body    = math.abs(close - open)
+
+// --- setup state --------------------------------------------------------------------------------
+var int   stDir   = 0       // active direction: 1 long, -1 short, 0 idle
+var int   stStage = 0       // 1 = await MSS, 2 = await IFVG, 3 = await exit from the zone, 4 = await CE tap
+var int   lsBar   = na      // LTF bar of the HTF sweep
+var float extLow  = na      // extreme low made before the MSS (SL reference)
+var float extHigh = na      // extreme high made before the MSS (SL reference)
+var float mssRef  = na      // the extreme the MSS was built on (structure invalidation)
+var float slLvl   = na
+var float zgTop   = na      // IFVG zone top
+var float zgBot   = na      // IFVG zone bottom
+var int   zgBar   = na      // bar the original FVG was created on
+var float ceLvl   = na      // 50% consequent encroachment
+var box   zgBox   = na
+var line  ceLine  = na
+
+bool isLongEntry  = false
+bool isShortEntry = false
+
+// --- step 1 : new HTF liquidity sweep -> arm the model ------------------------------------------
+if lsDir != 0
+    if not na(zgBox)                            // drop an unfinished setup
+        box.delete(zgBox)
+        zgBox := na
+    if not na(ceLine)
+        line.delete(ceLine)
+        ceLine := na
+    stDir   := lsDir
+    stStage := 1
+    lsBar   := bar_index
+    extLow  := low
+    extHigh := high
+    zgTop   := na
+    zgBot   := na
+    zgBar   := na
+    ceLvl   := na
+    mssRef  := na
+    if lsDir == 1
+        array.push(lblArr, label.new(bar_index, low, "LS", xloc=xloc.bar_index, yloc=yloc.belowbar,
+             style=label.style_none, textcolor=i_cNeut, size=size.tiny))
+    else
+        array.push(lblArr, label.new(bar_index, high, "LS", xloc=xloc.bar_index, yloc=yloc.abovebar,
+             style=label.style_none, textcolor=i_cNeut, size=size.tiny))
+    f_trimLabels(lblArr)
+
+// extreme swing formed between the sweep and the MSS -> SL reference
+if stStage >= 1
+    extLow  := math.min(nz(extLow, low), low)
+    extHigh := math.max(nz(extHigh, high), high)
+
+// the swing the MSS was built on is taken out -> the shift failed, wait for a new MSS
+if stStage >= 2 and not na(mssRef)
+    bool structFail = stDir == 1 ? close < mssRef : close > mssRef
+    if structFail
+        if not na(zgBox)
+            box.delete(zgBox)
+            zgBox := na
+        if not na(ceLine)
+            line.delete(ceLine)
+            ceLine := na
+        zgTop   := na
+        zgBot   := na
+        zgBar   := na
+        ceLvl   := na
+        mssRef  := na
+        stStage := 1
+        extLow  := low                              // start tracking the new leg
+        extHigh := high
+
+// --- step 2 : Market Structure Shift in the direction of the sweep -------------------------------
+bool mssUp = stStage == 1 and stDir == 1  and not na(lastPH) and not na(lsBar) and lastPHBar > lsBar and ta.crossover(close, lastPH)
+bool mssDn = stStage == 1 and stDir == -1 and not na(lastPL) and not na(lsBar) and lastPLBar > lsBar and ta.crossunder(close, lastPL)
+
+if mssUp
+    slLvl   := extLow - i_slBuf * atr            // just beyond the extreme low made before the MSS
+    mssRef  := extLow
+    stStage := 2
+    zgTop   := na
+    zgBot   := na
+    zgBar   := na
+    array.push(lblArr, label.new(bar_index, low, "MSS", xloc=xloc.bar_index, yloc=yloc.belowbar,
+         style=label.style_none, textcolor=i_cNeut, size=size.tiny))
+    f_trimLabels(lblArr)
+else if mssDn
+    slLvl   := extHigh + i_slBuf * atr           // just beyond the extreme high made before the MSS
+    mssRef  := extHigh
+    stStage := 2
+    zgTop   := na
+    zgBot   := na
+    zgBar   := na
+    array.push(lblArr, label.new(bar_index, high, "MSS", xloc=xloc.bar_index, yloc=yloc.abovebar,
+         style=label.style_none, textcolor=i_cNeut, size=size.tiny))
+    f_trimLabels(lblArr)
+
+// --- step 3 : Inversed FVG (a regular FVG completely disrespected) -------------------------------
+if stStage == 2
+    if stDir == 1
+        // long: a bearish FVG broken and closed strongly above -> flipped into support
+        if bearFvg
+            zgTop := low[2]
+            zgBot := high
+            zgBar := bar_index
+        if not na(zgTop) and not na(zgBar) and bar_index > zgBar and close > zgTop and
+             low <= zgBot and body >= i_disp * atr and close > open
+            stStage := 3
+            ceLvl   := (zgTop + zgBot) / 2.0     // 50% consequent encroachment
+            zgBox   := box.new(zgBar, zgTop, bar_index, zgBot, border_color=i_cBull, border_width=1,
+                 border_style=line.style_dashed, bgcolor=color.new(i_cBull, 95))
+            ceLine  := line.new(zgBar, ceLvl, bar_index, ceLvl, xloc=xloc.bar_index, color=i_cNeut,
+                 style=line.style_dotted, width=1)
+            // the zone is deleted by the state machine if it fails
+    else
+        // short: a bullish FVG broken and closed strongly below -> flipped into resistance
+        if bullFvg
+            zgTop := low
+            zgBot := high[2]
+            zgBar := bar_index
+        if not na(zgBot) and not na(zgBar) and bar_index > zgBar and close < zgBot and
+             high >= zgTop and body >= i_disp * atr and close < open
+            stStage := 3
+            ceLvl   := (zgTop + zgBot) / 2.0     // 50% consequent encroachment
+            zgBox   := box.new(zgBar, zgTop, bar_index, zgBot, border_color=i_cBear, border_width=1,
+                 border_style=line.style_dashed, bgcolor=color.new(i_cBear, 95))
+            ceLine  := line.new(zgBar, ceLvl, bar_index, ceLvl, xloc=xloc.bar_index, color=i_cNeut,
+                 style=line.style_dotted, width=1)
+            // the zone is deleted by the state machine if it fails
+
+// --- step 4 : price leaves the zone, then taps the 50% CE -> entry, stop and target --------------
+if (stStage == 3 or stStage == 4) and not na(zgBox) and not na(ceLine)
+    box.set_right(zgBox, bar_index)              // zone follows price until it is tapped
+    line.set_x2(ceLine, bar_index)
+
+    bool invalid  = stDir == 1 ? close < zgBot : close > zgTop
+    bool leftZone = stDir == 1 ? low > zgTop : high < zgBot
+    bool tapped   = low <= ceLvl and high >= ceLvl and (stDir == 1 ? slLvl < ceLvl : slLvl > ceLvl)
+
+    if invalid
+        box.delete(zgBox)                        // zone fully broken -> keep looking for a new IFVG
+        line.delete(ceLine)
+        zgBox   := na
+        ceLine  := na
+        zgTop   := na
+        zgBot   := na
+        zgBar   := na
+        ceLvl   := na
+        stStage := 2
+    else if stStage == 3
+        // the retrace only counts once price has completely left the flipped zone
+        if leftZone
+            stStage := 4
+    else if tapped
+        float entry     = ceLvl
+        float risk      = math.max(math.abs(entry - slLvl), syminfo.mintick)
+        bool  withTrend = (stDir == 1 and htfUp) or (stDir == -1 and not htfUp)
+        float rr        = withTrend ? i_rrWith : i_rrAgainst
+        float tp        = entry + stDir * risk * rr
+        int   xEnd      = bar_index + i_fwdBars
+        color dirCol    = stDir == 1 ? i_cBull : i_cBear
+
+        if stDir == 1
+            isLongEntry := true
+            array.push(lblArr, label.new(bar_index, low, "Entry", xloc=xloc.bar_index, yloc=yloc.belowbar,
+                 style=label.style_none, textcolor=dirCol, size=size.small))
+        else
+            isShortEntry := true
+            array.push(lblArr, label.new(bar_index, high, "Entry", xloc=xloc.bar_index, yloc=yloc.abovebar,
+                 style=label.style_none, textcolor=dirCol, size=size.small))
+
+        array.push(boxArr, zgBox)                    // the traded IFVG + CE line stay on the chart
+        array.push(lneArr, ceLine)
+        array.push(lneArr, line.new(bar_index, slLvl, xEnd, slLvl, xloc=xloc.bar_index, color=i_cSL,
+             style=line.style_dashed, width=1))
+        array.push(lneArr, line.new(bar_index, tp, xEnd, tp, xloc=xloc.bar_index, color=i_cTP,
+             style=line.style_dashed, width=1))
+        array.push(lblArr, label.new(xEnd, slLvl, "SL", xloc=xloc.bar_index, yloc=yloc.price,
+             style=label.style_none, textcolor=i_cSL, size=size.tiny))
+        array.push(lblArr, label.new(xEnd, tp, "TP", xloc=xloc.bar_index, yloc=yloc.price,
+             style=label.style_none, textcolor=i_cTP, size=size.tiny))
+        f_trimBoxes(boxArr)
+        f_trimLines(lneArr)
+        f_trimLabels(lblArr)
+
+        zgBox   := na
+        ceLine  := na
+        stStage := 0
+        stDir   := 0
+
+// ===================================== ALERTS ===================================================
+alertcondition(isLongEntry,  "SR A+ long (CE tap)",  "Smart Risk A+ : long entry on the 50% CE of the IFVG")
+alertcondition(isShortEntry, "SR A+ short (CE tap)", "Smart Risk A+ : short entry on the 50% CE of the IFVG")
