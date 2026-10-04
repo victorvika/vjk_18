@@ -1,0 +1,168 @@
+//@version=6
+indicator("A+ Entry Model", shorttitle="A+ Entry", overlay=true, max_labels_count=500)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+groupSignals = "Signal settings"
+signalMode = input.string("Strict", "Signal quality", options=["Strict", "Balanced", "Frequent"], group=groupSignals, tooltip="Strict requires all six confirmations. Balanced requires five. Frequent requires four.")
+enableLongs = input.bool(true, "Enable long signals", group=groupSignals)
+enableShorts = input.bool(true, "Enable short signals", group=groupSignals)
+cooldownBars = input.int(10, "Cooldown bars", minval=0, group=groupSignals)
+confirmOnClose = input.bool(true, "Confirm only on bar close", group=groupSignals, tooltip="Recommended to avoid intrabar signals that disappear before the candle closes.")
+
+// Trend and pullback
+groupTrend = "Trend and pullback"
+fastLength = input.int(21, "Fast EMA", minval=1, group=groupTrend)
+slowLength = input.int(50, "Slow EMA", minval=2, group=groupTrend)
+trendLength = input.int(200, "Trend EMA", minval=3, group=groupTrend)
+pullbackAtrTolerance = input.float(0.25, "Pullback tolerance (ATR)", minval=0.0, step=0.05, group=groupTrend)
+
+// Confirmation filters
+groupFilters = "Confirmation filters"
+rsiLength = input.int(14, "RSI length", minval=2, group=groupFilters)
+rsiLongLevel = input.float(52.0, "Minimum RSI for longs", minval=50.0, maxval=100.0, step=0.5, group=groupFilters)
+rsiShortLevel = input.float(48.0, "Maximum RSI for shorts", minval=0.0, maxval=50.0, step=0.5, group=groupFilters)
+volumeLength = input.int(20, "Volume average length", minval=1, group=groupFilters)
+volumeMultiplier = input.float(1.20, "Relative-volume minimum", minval=0.0, step=0.05, group=groupFilters)
+diLength = input.int(14, "DI length", minval=1, group=groupFilters)
+adxSmoothing = input.int(14, "ADX smoothing", minval=1, group=groupFilters)
+adxMinimum = input.float(20.0, "Minimum ADX", minval=0.0, step=0.5, group=groupFilters)
+minBodyAtr = input.float(0.15, "Minimum candle body (ATR)", minval=0.0, step=0.05, group=groupFilters)
+
+// Session filter
+groupSession = "Session filter"
+useSession = input.bool(false, "Use session filter", group=groupSession)
+tradingSession = input.session("0915-1530", "Allowed session", group=groupSession, tooltip="Uses the exchange timezone of the chart symbol.")
+
+// Risk guide
+groupRisk = "Risk guide (visual only)"
+atrLength = input.int(14, "ATR length", minval=1, group=groupRisk)
+stopAtrMultiplier = input.float(1.5, "Stop distance (ATR)", minval=0.1, step=0.1, group=groupRisk)
+riskReward = input.float(2.0, "Target reward/risk", minval=0.1, step=0.1, group=groupRisk)
+showRiskLevels = input.bool(true, "Show latest entry, stop, and target", group=groupRisk)
+riskLevelBars = input.int(20, "Display levels for bars", minval=1, group=groupRisk)
+
+// Display
+groupDisplay = "Display"
+showFastSlow = input.bool(true, "Show fast and slow EMAs", group=groupDisplay)
+showTrendEma = input.bool(true, "Show trend EMA", group=groupDisplay)
+showBarColors = input.bool(false, "Color signal bars", group=groupDisplay)
+showDashboard = input.bool(true, "Show dashboard", group=groupDisplay)
+
+// -----------------------------------------------------------------------------
+// Calculations
+// -----------------------------------------------------------------------------
+fastEma = ta.ema(close, fastLength)
+slowEma = ta.ema(close, slowLength)
+trendEma = ta.ema(close, trendLength)
+atr = ta.atr(atrLength)
+rsi = ta.rsi(close, rsiLength)
+averageVolume = ta.sma(volume, volumeLength)
+[plusDi, minusDi, adx] = ta.dmi(diLength, adxSmoothing)
+
+inSession = not useSession or not na(time(timeframe.period, tradingSession))
+barIsReady = not confirmOnClose or barstate.isconfirmed
+
+// Six independent confluences form the setup score.
+longTrend = close > trendEma and fastEma > slowEma and slowEma > trendEma
+shortTrend = close < trendEma and fastEma < slowEma and slowEma < trendEma
+
+longPullback = low <= fastEma + atr * pullbackAtrTolerance and close > fastEma
+shortPullback = high >= fastEma - atr * pullbackAtrTolerance and close < fastEma
+
+longMomentum = rsi >= rsiLongLevel and rsi > rsi[1] and plusDi > minusDi
+shortMomentum = rsi <= rsiShortLevel and rsi < rsi[1] and minusDi > plusDi
+
+volumeAvailable = not na(volume) and not na(averageVolume) and averageVolume > 0
+volumeConfirmed = not volumeAvailable or volume >= averageVolume * volumeMultiplier
+trendStrength = adx >= adxMinimum
+
+candleBody = math.abs(close - open)
+longTriggerCandle = close > open and candleBody >= atr * minBodyAtr and close > high[1]
+shortTriggerCandle = close < open and candleBody >= atr * minBodyAtr and close < low[1]
+
+longScore = (longTrend ? 1 : 0) + (longPullback ? 1 : 0) + (longMomentum ? 1 : 0) + (volumeConfirmed ? 1 : 0) + (trendStrength ? 1 : 0) + (longTriggerCandle ? 1 : 0)
+shortScore = (shortTrend ? 1 : 0) + (shortPullback ? 1 : 0) + (shortMomentum ? 1 : 0) + (volumeConfirmed ? 1 : 0) + (trendStrength ? 1 : 0) + (shortTriggerCandle ? 1 : 0)
+requiredScore = signalMode == "Strict" ? 6 : signalMode == "Balanced" ? 5 : 4
+
+// Trend and pullback remain mandatory even when a score below six is selected.
+longQualified = enableLongs and inSession and longTrend and longPullback and longScore >= requiredScore
+shortQualified = enableShorts and inSession and shortTrend and shortPullback and shortScore >= requiredScore
+
+var int lastSignalBar = na
+cooldownComplete = na(lastSignalBar) or bar_index - lastSignalBar > cooldownBars
+longSignal = barIsReady and cooldownComplete and longQualified
+shortSignal = barIsReady and cooldownComplete and shortQualified
+
+if longSignal or shortSignal
+    lastSignalBar := bar_index
+
+// -----------------------------------------------------------------------------
+// Latest signal risk guide
+// -----------------------------------------------------------------------------
+var float latestEntry = na
+var float latestStop = na
+var float latestTarget = na
+var int latestSignalBar = na
+
+if longSignal
+    latestEntry := close
+    latestStop := close - atr * stopAtrMultiplier
+    latestTarget := close + (close - latestStop) * riskReward
+    latestSignalBar := bar_index
+else if shortSignal
+    latestEntry := close
+    latestStop := close + atr * stopAtrMultiplier
+    latestTarget := close - (latestStop - close) * riskReward
+    latestSignalBar := bar_index
+
+showCurrentLevels = showRiskLevels and not na(latestSignalBar) and bar_index - latestSignalBar <= riskLevelBars
+
+// -----------------------------------------------------------------------------
+// Visuals
+// -----------------------------------------------------------------------------
+plot(showFastSlow ? fastEma : na, "Fast EMA", color=color.new(color.teal, 0), linewidth=1)
+plot(showFastSlow ? slowEma : na, "Slow EMA", color=color.new(color.orange, 0), linewidth=1)
+plot(showTrendEma ? trendEma : na, "Trend EMA", color=color.new(color.blue, 0), linewidth=2)
+
+plot(showCurrentLevels ? latestEntry : na, "Latest entry", color=color.new(color.white, 0), linewidth=1, style=plot.style_linebr)
+plot(showCurrentLevels ? latestStop : na, "Latest stop", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(showCurrentLevels ? latestTarget : na, "Latest target", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape(longSignal, title="A+ Long", text="A+\nLONG", style=shape.labelup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
+plotshape(shortSignal, title="A+ Short", text="A+\nSHORT", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+barcolor(showBarColors ? (longSignal ? color.lime : shortSignal ? color.red : na) : na)
+
+// Scores are available in TradingView's Data Window without cluttering the chart.
+plot(longScore, "Long confluence score", color=color.new(color.lime, 100), display=display.data_window)
+plot(shortScore, "Short confluence score", color=color.new(color.red, 100), display=display.data_window)
+
+var table dashboard = table.new(position.top_right, 2, 5, border_width=1)
+if barstate.islast and showDashboard
+    biasText = longTrend ? "BULLISH" : shortTrend ? "BEARISH" : "NEUTRAL"
+    biasColor = longTrend ? color.lime : shortTrend ? color.red : color.silver
+    table.cell(dashboard, 0, 0, "A+ MODEL", text_color=color.white, bgcolor=color.new(color.blue, 55))
+    table.cell(dashboard, 1, 0, signalMode, text_color=color.white, bgcolor=color.new(color.blue, 55))
+    table.cell(dashboard, 0, 1, "Bias", text_color=color.silver)
+    table.cell(dashboard, 1, 1, biasText, text_color=biasColor)
+    table.cell(dashboard, 0, 2, "Long score", text_color=color.silver)
+    table.cell(dashboard, 1, 2, str.tostring(longScore) + "/6", text_color=longScore >= requiredScore ? color.lime : color.silver)
+    table.cell(dashboard, 0, 3, "Short score", text_color=color.silver)
+    table.cell(dashboard, 1, 3, str.tostring(shortScore) + "/6", text_color=shortScore >= requiredScore ? color.red : color.silver)
+    table.cell(dashboard, 0, 4, "Session", text_color=color.silver)
+    table.cell(dashboard, 1, 4, inSession ? "ACTIVE" : "CLOSED", text_color=inSession ? color.lime : color.orange)
+else if barstate.islast and not showDashboard
+    table.clear(dashboard, 0, 0, 1, 4)
+
+// -----------------------------------------------------------------------------
+// Alerts
+// -----------------------------------------------------------------------------
+alertcondition(longSignal, "A+ Long Entry", "A+ LONG entry confirmed on {{ticker}} {{interval}} at {{close}}")
+alertcondition(shortSignal, "A+ Short Entry", "A+ SHORT entry confirmed on {{ticker}} {{interval}} at {{close}}")
+alertcondition(longSignal or shortSignal, "Any A+ Entry", "A+ entry confirmed on {{ticker}} {{interval}} at {{close}}")
+
+if longSignal
+    alert('{"model":"A+ Entry","side":"long","ticker":"' + syminfo.tickerid + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(latestEntry) + ',"stop":' + str.tostring(latestStop) + ',"target":' + str.tostring(latestTarget) + '}', alert.freq_once_per_bar_close)
+if shortSignal
+    alert('{"model":"A+ Entry","side":"short","ticker":"' + syminfo.tickerid + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(latestEntry) + ',"stop":' + str.tostring(latestStop) + ',"target":' + str.tostring(latestTarget) + '}', alert.freq_once_per_bar_close)

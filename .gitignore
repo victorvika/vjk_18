@@ -1,0 +1,12 @@
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local TradingView notes and exported data
+*.csv
+*.log
+.env
