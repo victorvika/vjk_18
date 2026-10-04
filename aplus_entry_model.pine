@@ -1,168 +1,346 @@
 //@version=6
-indicator("A+ Entry Model", shorttitle="A+ Entry", overlay=true, max_labels_count=500)
+indicator("Smart Risk A+ Trading Model", shorttitle="Smart Risk A+", overlay=true, max_boxes_count=50, max_lines_count=150, max_labels_count=200)
 
-// -----------------------------------------------------------------------------
+// =============================================================================
 // Inputs
-// -----------------------------------------------------------------------------
-groupSignals = "Signal settings"
-signalMode = input.string("Strict", "Signal quality", options=["Strict", "Balanced", "Frequent"], group=groupSignals, tooltip="Strict requires all six confirmations. Balanced requires five. Frequent requires four.")
-enableLongs = input.bool(true, "Enable long signals", group=groupSignals)
-enableShorts = input.bool(true, "Enable short signals", group=groupSignals)
-cooldownBars = input.int(10, "Cooldown bars", minval=0, group=groupSignals)
-confirmOnClose = input.bool(true, "Confirm only on bar close", group=groupSignals, tooltip="Recommended to avoid intrabar signals that disappear before the candle closes.")
+// =============================================================================
+string GROUP_STRUCTURE = "01 · Structure"
+string htfTimeframe = input.timeframe("60", "Liquidity sweep timeframe", group=GROUP_STRUCTURE)
+string executionTimeframe = input.timeframe("5", "Execution chart timeframe", group=GROUP_STRUCTURE, tooltip="The MSS, IFVG, and entry logic run on the chart timeframe. The default model is designed for a 5-minute chart.")
+bool enforceExecutionTimeframe = input.bool(true, "Require execution timeframe", group=GROUP_STRUCTURE)
+int htfSwingLength = input.int(5, "HTF major swing strength", minval=2, maxval=20, group=GROUP_STRUCTURE)
+int ltfSwingLength = input.int(3, "LTF structure swing strength", minval=2, maxval=15, group=GROUP_STRUCTURE)
+float minimumWickPercent = input.float(0.45, "LS minimum wick / range", minval=0.20, maxval=0.90, step=0.05, group=GROUP_STRUCTURE)
+float wickToBodyRatio = input.float(1.50, "LS minimum wick / body", minval=0.50, maxval=5.00, step=0.25, group=GROUP_STRUCTURE)
+float mssBodyAtr = input.float(0.35, "MSS displacement body (ATR)", minval=0.00, maxval=3.00, step=0.05, group=GROUP_STRUCTURE)
+int setupLifetimeBars = input.int(120, "Setup expiry (chart bars)", minval=10, maxval=500, group=GROUP_STRUCTURE)
 
-// Trend and pullback
-groupTrend = "Trend and pullback"
-fastLength = input.int(21, "Fast EMA", minval=1, group=groupTrend)
-slowLength = input.int(50, "Slow EMA", minval=2, group=groupTrend)
-trendLength = input.int(200, "Trend EMA", minval=3, group=groupTrend)
-pullbackAtrTolerance = input.float(0.25, "Pullback tolerance (ATR)", minval=0.0, step=0.05, group=groupTrend)
+string GROUP_IFVG = "02 · IFVG"
+float violationBodyAtr = input.float(0.50, "Violation body (ATR)", minval=0.00, maxval=3.00, step=0.05, group=GROUP_IFVG)
+float violationBodyPercent = input.float(0.55, "Violation body / range", minval=0.10, maxval=1.00, step=0.05, group=GROUP_IFVG)
+int fvgLifetimeBars = input.int(150, "Regular FVG search age", minval=10, maxval=500, group=GROUP_IFVG)
+int maximumFvgCandidates = input.int(40, "Maximum FVG candidates", minval=5, maxval=100, group=GROUP_IFVG)
+int zoneExtensionBars = input.int(50, "IFVG maximum extension", minval=5, maxval=300, group=GROUP_IFVG)
+bool requireCeRejection = input.bool(true, "Require close back through CE", group=GROUP_IFVG, tooltip="Long entries must close at/above CE; short entries must close at/below CE after tapping it.")
 
-// Confirmation filters
-groupFilters = "Confirmation filters"
-rsiLength = input.int(14, "RSI length", minval=2, group=groupFilters)
-rsiLongLevel = input.float(52.0, "Minimum RSI for longs", minval=50.0, maxval=100.0, step=0.5, group=groupFilters)
-rsiShortLevel = input.float(48.0, "Maximum RSI for shorts", minval=0.0, maxval=50.0, step=0.5, group=groupFilters)
-volumeLength = input.int(20, "Volume average length", minval=1, group=groupFilters)
-volumeMultiplier = input.float(1.20, "Relative-volume minimum", minval=0.0, step=0.05, group=groupFilters)
-diLength = input.int(14, "DI length", minval=1, group=groupFilters)
-adxSmoothing = input.int(14, "ADX smoothing", minval=1, group=groupFilters)
-adxMinimum = input.float(20.0, "Minimum ADX", minval=0.0, step=0.5, group=groupFilters)
-minBodyAtr = input.float(0.15, "Minimum candle body (ATR)", minval=0.0, step=0.05, group=groupFilters)
+string GROUP_RISK = "03 · Smart risk"
+int riskSwingLookback = input.int(12, "Recent swing lookback", minval=3, maxval=100, group=GROUP_RISK)
+int htfTrendEmaLength = input.int(50, "HTF trend EMA", minval=5, maxval=300, group=GROUP_RISK)
+float trendRewardRisk = input.float(5.0, "Trend-following reward / risk", minval=0.5, maxval=20.0, step=0.5, group=GROUP_RISK)
+float counterTrendRewardRisk = input.float(2.5, "Counter-trend reward / risk", minval=0.5, maxval=20.0, step=0.5, group=GROUP_RISK)
+int targetLineBars = input.int(18, "Entry / SL / TP line length", minval=3, maxval=100, group=GROUP_RISK)
+int maximumTradeHistory = input.int(6, "Historical risk guides", minval=1, maxval=20, group=GROUP_RISK)
 
-// Session filter
-groupSession = "Session filter"
-useSession = input.bool(false, "Use session filter", group=groupSession)
-tradingSession = input.session("0915-1530", "Allowed session", group=groupSession, tooltip="Uses the exchange timezone of the chart symbol.")
+string GROUP_DISPLAY = "04 · Minimal display"
+bool showLiquidityLabels = input.bool(true, "Show LS labels", group=GROUP_DISPLAY)
+bool showMssLabels = input.bool(true, "Show MSS labels", group=GROUP_DISPLAY)
+bool showEntryLabels = input.bool(true, "Show entry labels", group=GROUP_DISPLAY)
+bool showDashboard = input.bool(true, "Show status dashboard", group=GROUP_DISPLAY)
+int maximumZoneHistory = input.int(8, "Historical IFVG zones", minval=1, maxval=20, group=GROUP_DISPLAY)
 
-// Risk guide
-groupRisk = "Risk guide (visual only)"
-atrLength = input.int(14, "ATR length", minval=1, group=groupRisk)
-stopAtrMultiplier = input.float(1.5, "Stop distance (ATR)", minval=0.1, step=0.1, group=groupRisk)
-riskReward = input.float(2.0, "Target reward/risk", minval=0.1, step=0.1, group=groupRisk)
-showRiskLevels = input.bool(true, "Show latest entry, stop, and target", group=groupRisk)
-riskLevelBars = input.int(20, "Display levels for bars", minval=1, group=groupRisk)
+// Muted classic palette. High-transparency fills preserve the candlesticks.
+color COLOR_SLATE = color.rgb(100, 116, 139)
+color COLOR_TEAL = color.rgb(76, 125, 116)
+color COLOR_GREEN = color.rgb(105, 145, 118)
+color COLOR_CRIMSON = color.rgb(166, 91, 96)
+color COLOR_AMBER = color.rgb(171, 142, 91)
+color COLOR_TEXT = color.rgb(180, 188, 198)
+color COLOR_TRANSPARENT = color.new(color.black, 100)
 
-// Display
-groupDisplay = "Display"
-showFastSlow = input.bool(true, "Show fast and slow EMAs", group=groupDisplay)
-showTrendEma = input.bool(true, "Show trend EMA", group=groupDisplay)
-showBarColors = input.bool(false, "Color signal bars", group=groupDisplay)
-showDashboard = input.bool(true, "Show dashboard", group=groupDisplay)
+// =============================================================================
+// Higher-timeframe liquidity sweep — returned with a one-HTF-bar offset.
+// This makes the HTF event confirmed and prevents future leakage/repainting.
+// =============================================================================
+f_confirmedHtfState() =>
+    float pivotHigh = ta.pivothigh(high, htfSwingLength, htfSwingLength)
+    float pivotLow = ta.pivotlow(low, htfSwingLength, htfSwingLength)
+    float majorHigh = ta.valuewhen(not na(pivotHigh), pivotHigh, 0)
+    float majorLow = ta.valuewhen(not na(pivotLow), pivotLow, 0)
+    float candleRange = math.max(high - low, syminfo.mintick)
+    float candleBody = math.abs(close - open)
+    float upperWick = high - math.max(open, close)
+    float lowerWick = math.min(open, close) - low
+    bool sweptHigh = not na(majorHigh) and high > majorHigh and close < majorHigh and upperWick / candleRange >= minimumWickPercent and upperWick >= candleBody * wickToBodyRatio
+    bool sweptLow = not na(majorLow) and low < majorLow and close > majorLow and lowerWick / candleRange >= minimumWickPercent and lowerWick >= candleBody * wickToBodyRatio
+    int sweepDirection = sweptLow ? 1 : sweptHigh ? -1 : 0
+    float sweptLevel = sweptLow ? majorLow : sweptHigh ? majorHigh : na
+    float trendEma = ta.ema(close, htfTrendEmaLength)
+    int trendDirection = close > trendEma ? 1 : close < trendEma ? -1 : 0
+    [sweepDirection[1], sweptLevel[1], high[1], low[1], trendDirection[1], time[1]]
 
-// -----------------------------------------------------------------------------
-// Calculations
-// -----------------------------------------------------------------------------
-fastEma = ta.ema(close, fastLength)
-slowEma = ta.ema(close, slowLength)
-trendEma = ta.ema(close, trendLength)
-atr = ta.atr(atrLength)
-rsi = ta.rsi(close, rsiLength)
-averageVolume = ta.sma(volume, volumeLength)
-[plusDi, minusDi, adx] = ta.dmi(diLength, adxSmoothing)
+[htfSweepDirection, htfSweptLevel, htfEventHigh, htfEventLow, htfTrendDirection, htfEventTime] = request.security(syminfo.tickerid, htfTimeframe, f_confirmedHtfState(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
 
-inSession = not useSession or not na(time(timeframe.period, tradingSession))
-barIsReady = not confirmOnClose or barstate.isconfirmed
+bool newHtfBar = ta.change(time(htfTimeframe)) != 0
+bool newBullishLiquiditySweep = newHtfBar and htfSweepDirection == 1
+bool newBearishLiquiditySweep = newHtfBar and htfSweepDirection == -1
 
-// Six independent confluences form the setup score.
-longTrend = close > trendEma and fastEma > slowEma and slowEma > trendEma
-shortTrend = close < trendEma and fastEma < slowEma and slowEma < trendEma
+// =============================================================================
+// Lower-timeframe structure and shared calculations
+// =============================================================================
+float atr = ta.atr(14)
+float body = math.abs(close - open)
+float candleRange = math.max(high - low, syminfo.mintick)
+float pivotHigh = ta.pivothigh(high, ltfSwingLength, ltfSwingLength)
+float pivotLow = ta.pivotlow(low, ltfSwingLength, ltfSwingLength)
+float latestPivotHigh = ta.valuewhen(not na(pivotHigh), pivotHigh, 0)
+float latestPivotLow = ta.valuewhen(not na(pivotLow), pivotLow, 0)
+float fallbackHigh = ta.highest(high, ltfSwingLength * 3)[1]
+float fallbackLow = ta.lowest(low, ltfSwingLength * 3)[1]
+float recentSwingHigh = ta.highest(high, riskSwingLookback)
+float recentSwingLow = ta.lowest(low, riskSwingLookback)
 
-longPullback = low <= fastEma + atr * pullbackAtrTolerance and close > fastEma
-shortPullback = high >= fastEma - atr * pullbackAtrTolerance and close < fastEma
+float chartSeconds = timeframe.in_seconds(timeframe.period)
+float executionSeconds = timeframe.in_seconds(executionTimeframe)
+float htfSeconds = timeframe.in_seconds(htfTimeframe)
+bool correctExecutionTimeframe = chartSeconds == executionSeconds
+bool correctTimeframeHierarchy = chartSeconds < htfSeconds
+bool timeframeIsValid = correctTimeframeHierarchy and (not enforceExecutionTimeframe or correctExecutionTimeframe)
+bool confirmedBar = barstate.isconfirmed
 
-longMomentum = rsi >= rsiLongLevel and rsi > rsi[1] and plusDi > minusDi
-shortMomentum = rsi <= rsiShortLevel and rsi < rsi[1] and minusDi > plusDi
+// Setup stages: 0 idle, 1 LS found, 2 MSS found, 3 IFVG active, 4 entry fired.
+var int setupDirection = 0
+var int setupStage = 0
+var int setupStartBar = na
+var float mssBreakLevel = na
+var float activeIfvgTop = na
+var float activeIfvgBottom = na
+var float activeCe = na
+var int activeIfvgBar = na
+var box activeIfvgBox = na
+var line activeCeLine = na
+var string latestSignalText = "Waiting"
 
-volumeAvailable = not na(volume) and not na(averageVolume) and averageVolume > 0
-volumeConfirmed = not volumeAvailable or volume >= averageVolume * volumeMultiplier
-trendStrength = adx >= adxMinimum
+// Drawing and candidate arrays keep object counts bounded.
+var array<float> fvgTops = array.new<float>()
+var array<float> fvgBottoms = array.new<float>()
+var array<int> fvgDirections = array.new<int>() // +1 bullish regular FVG, -1 bearish regular FVG.
+var array<int> fvgBornBars = array.new<int>()
+var array<box> ifvgBoxes = array.new<box>()
+var array<line> ceLines = array.new<line>()
+var array<line> riskLines = array.new<line>()
 
-candleBody = math.abs(close - open)
-longTriggerCandle = close > open and candleBody >= atr * minBodyAtr and close > high[1]
-shortTriggerCandle = close < open and candleBody >= atr * minBodyAtr and close < low[1]
+// =============================================================================
+// Stage 1: confirmed HTF liquidity sweep
+// =============================================================================
+if confirmedBar and timeframeIsValid and (newBullishLiquiditySweep or newBearishLiquiditySweep)
+    setupDirection := newBullishLiquiditySweep ? 1 : -1
+    setupStage := 1
+    setupStartBar := bar_index
+    mssBreakLevel := setupDirection == 1 ? nz(latestPivotHigh, fallbackHigh) : nz(latestPivotLow, fallbackLow)
+    activeIfvgTop := na
+    activeIfvgBottom := na
+    activeCe := na
+    activeIfvgBar := na
+    activeIfvgBox := na
+    activeCeLine := na
+    latestSignalText := setupDirection == 1 ? "Bullish LS" : "Bearish LS"
 
-longScore = (longTrend ? 1 : 0) + (longPullback ? 1 : 0) + (longMomentum ? 1 : 0) + (volumeConfirmed ? 1 : 0) + (trendStrength ? 1 : 0) + (longTriggerCandle ? 1 : 0)
-shortScore = (shortTrend ? 1 : 0) + (shortPullback ? 1 : 0) + (shortMomentum ? 1 : 0) + (volumeConfirmed ? 1 : 0) + (trendStrength ? 1 : 0) + (shortTriggerCandle ? 1 : 0)
-requiredScore = signalMode == "Strict" ? 6 : signalMode == "Balanced" ? 5 : 4
+    if showLiquidityLabels
+        string lsText = htfTimeframe + " LS " + (setupDirection == 1 ? "↑" : "↓")
+        label.new(x=bar_index, y=setupDirection == 1 ? low : high, text=lsText, yloc=setupDirection == 1 ? yloc.belowbar : yloc.abovebar, style=label.style_none, textcolor=setupDirection == 1 ? COLOR_TEAL : COLOR_CRIMSON, size=size.tiny)
 
-// Trend and pullback remain mandatory even when a score below six is selected.
-longQualified = enableLongs and inSession and longTrend and longPullback and longScore >= requiredScore
-shortQualified = enableShorts and inSession and shortTrend and shortPullback and shortScore >= requiredScore
+// =============================================================================
+// Stage 2: market structure shift after the sweep
+// =============================================================================
+bool bullishMss = confirmedBar and setupStage == 1 and bar_index > setupStartBar and setupDirection == 1 and not na(mssBreakLevel) and close > mssBreakLevel and close[1] <= mssBreakLevel and body >= atr * mssBodyAtr
+bool bearishMss = confirmedBar and setupStage == 1 and bar_index > setupStartBar and setupDirection == -1 and not na(mssBreakLevel) and close < mssBreakLevel and close[1] >= mssBreakLevel and body >= atr * mssBodyAtr
 
-var int lastSignalBar = na
-cooldownComplete = na(lastSignalBar) or bar_index - lastSignalBar > cooldownBars
-longSignal = barIsReady and cooldownComplete and longQualified
-shortSignal = barIsReady and cooldownComplete and shortQualified
+if bullishMss or bearishMss
+    setupStage := 2
+    latestSignalText := setupDirection == 1 ? "Bullish MSS" : "Bearish MSS"
+    if showMssLabels
+        label.new(x=bar_index, y=setupDirection == 1 ? low : high, text=setupDirection == 1 ? "MSS ↑" : "MSS ↓", yloc=setupDirection == 1 ? yloc.belowbar : yloc.abovebar, style=label.style_none, textcolor=COLOR_SLATE, size=size.tiny)
 
-if longSignal or shortSignal
-    lastSignalBar := bar_index
+// =============================================================================
+// Regular FVG registry. Zones stay hidden until they are strongly violated and
+// become an IFVG, which keeps the chart sparse and price action fully visible.
+// =============================================================================
+bool newBullishFvg = confirmedBar and low > high[2]
+bool newBearishFvg = confirmedBar and high < low[2]
 
-// -----------------------------------------------------------------------------
-// Latest signal risk guide
-// -----------------------------------------------------------------------------
+if newBullishFvg
+    array.push(fvgTops, low)
+    array.push(fvgBottoms, high[2])
+    array.push(fvgDirections, 1)
+    array.push(fvgBornBars, bar_index)
+if newBearishFvg
+    array.push(fvgTops, low[2])
+    array.push(fvgBottoms, high)
+    array.push(fvgDirections, -1)
+    array.push(fvgBornBars, bar_index)
+
+while array.size(fvgTops) > maximumFvgCandidates
+    array.shift(fvgTops)
+    array.shift(fvgBottoms)
+    array.shift(fvgDirections)
+    array.shift(fvgBornBars)
+
+// A strong body close through the far side flips the regular FVG into an IFVG.
+if confirmedBar and array.size(fvgTops) > 0
+    int candidateIndex = array.size(fvgTops) - 1
+    while candidateIndex >= 0
+        float zoneTop = array.get(fvgTops, candidateIndex)
+        float zoneBottom = array.get(fvgBottoms, candidateIndex)
+        int regularDirection = array.get(fvgDirections, candidateIndex)
+        int bornBar = array.get(fvgBornBars, candidateIndex)
+        bool expiredCandidate = bar_index - bornBar > fvgLifetimeBars
+        bool strongClose = body >= atr * violationBodyAtr and body / candleRange >= violationBodyPercent
+        bool bullishViolation = regularDirection == -1 and close > zoneTop and close[1] <= zoneTop and strongClose
+        bool bearishViolation = regularDirection == 1 and close < zoneBottom and close[1] >= zoneBottom and strongClose
+        bool violated = bullishViolation or bearishViolation
+        bool matchesSetup = setupStage == 2 and ((setupDirection == 1 and bullishViolation) or (setupDirection == -1 and bearishViolation))
+
+        if matchesSetup
+            activeIfvgTop := zoneTop
+            activeIfvgBottom := zoneBottom
+            activeCe := (zoneTop + zoneBottom) * 0.5
+            activeIfvgBar := bar_index
+            setupStage := 3
+            latestSignalText := setupDirection == 1 ? "Bullish IFVG" : "Bearish IFVG"
+
+            color zoneColor = setupDirection == 1 ? COLOR_TEAL : COLOR_CRIMSON
+            activeIfvgBox := box.new(left=bar_index, top=zoneTop, right=bar_index + 1, bottom=zoneBottom, border_color=color.new(zoneColor, 20), border_width=1, border_style=line.style_dashed, bgcolor=color.new(zoneColor, 95))
+            activeCeLine := line.new(x1=bar_index, y1=activeCe, x2=bar_index + 1, y2=activeCe, color=color.new(COLOR_SLATE, 15), width=1, style=line.style_dotted)
+            array.push(ifvgBoxes, activeIfvgBox)
+            array.push(ceLines, activeCeLine)
+
+            while array.size(ifvgBoxes) > maximumZoneHistory
+                box.delete(array.shift(ifvgBoxes))
+                line.delete(array.shift(ceLines))
+
+        if violated or expiredCandidate
+            array.remove(fvgTops, candidateIndex)
+            array.remove(fvgBottoms, candidateIndex)
+            array.remove(fvgDirections, candidateIndex)
+            array.remove(fvgBornBars, candidateIndex)
+        candidateIndex -= 1
+
+// Extend only the active IFVG to the immediate right; stop extending after its
+// configured life, invalidation, or entry. The 95%-transparent fill never masks candles.
+if setupStage == 3 and not na(activeIfvgBox) and not na(activeCeLine)
+    int cappedRight = math.min(bar_index + 1, activeIfvgBar + zoneExtensionBars)
+    box.set_right(activeIfvgBox, cappedRight)
+    line.set_x2(activeCeLine, cappedRight)
+
+// =============================================================================
+// Stage 3 → 4: CE retracement entry and smart risk targets
+// =============================================================================
+bool ifvgExpired = setupStage == 3 and bar_index - activeIfvgBar > zoneExtensionBars
+bool bullishIfvgInvalid = setupStage == 3 and setupDirection == 1 and close < activeIfvgBottom
+bool bearishIfvgInvalid = setupStage == 3 and setupDirection == -1 and close > activeIfvgTop
+
+if confirmedBar and (ifvgExpired or bullishIfvgInvalid or bearishIfvgInvalid)
+    if not na(activeIfvgBox)
+        box.set_right(activeIfvgBox, bar_index)
+    if not na(activeCeLine)
+        line.set_x2(activeCeLine, bar_index)
+    setupStage := 2
+    activeIfvgTop := na
+    activeIfvgBottom := na
+    activeCe := na
+    activeIfvgBar := na
+    activeIfvgBox := na
+    activeCeLine := na
+    latestSignalText := "Awaiting IFVG"
+
+bool ceTouched = setupStage == 3 and bar_index > activeIfvgBar and low <= activeCe and high >= activeCe
+bool bullishCeConfirmed = ceTouched and setupDirection == 1 and (not requireCeRejection or close >= activeCe)
+bool bearishCeConfirmed = ceTouched and setupDirection == -1 and (not requireCeRejection or close <= activeCe)
+bool buySignal = confirmedBar and timeframeIsValid and bullishCeConfirmed
+bool sellSignal = confirmedBar and timeframeIsValid and bearishCeConfirmed
+
 var float latestEntry = na
 var float latestStop = na
 var float latestTarget = na
-var int latestSignalBar = na
+var float latestRewardRisk = na
 
-if longSignal
-    latestEntry := close
-    latestStop := close - atr * stopAtrMultiplier
-    latestTarget := close + (close - latestStop) * riskReward
-    latestSignalBar := bar_index
-else if shortSignal
-    latestEntry := close
-    latestStop := close + atr * stopAtrMultiplier
-    latestTarget := close - (latestStop - close) * riskReward
-    latestSignalBar := bar_index
+if buySignal or sellSignal
+    bool isLong = buySignal
+    latestEntry := activeCe
+    latestStop := isLong ? recentSwingLow : recentSwingHigh
 
-showCurrentLevels = showRiskLevels and not na(latestSignalBar) and bar_index - latestSignalBar <= riskLevelBars
+    // A malformed/zero risk distance can occur on unusual synthetic symbols.
+    // ATR fallback preserves a usable guide while normal markets use the recent swing.
+    bool invalidStop = isLong ? latestStop >= latestEntry : latestStop <= latestEntry
+    if invalidStop
+        latestStop := isLong ? latestEntry - atr : latestEntry + atr
 
-// -----------------------------------------------------------------------------
-// Visuals
-// -----------------------------------------------------------------------------
-plot(showFastSlow ? fastEma : na, "Fast EMA", color=color.new(color.teal, 0), linewidth=1)
-plot(showFastSlow ? slowEma : na, "Slow EMA", color=color.new(color.orange, 0), linewidth=1)
-plot(showTrendEma ? trendEma : na, "Trend EMA", color=color.new(color.blue, 0), linewidth=2)
+    bool followsHtfTrend = (isLong and htfTrendDirection == 1) or (not isLong and htfTrendDirection == -1)
+    latestRewardRisk := followsHtfTrend ? trendRewardRisk : counterTrendRewardRisk
+    float riskDistance = math.abs(latestEntry - latestStop)
+    latestTarget := isLong ? latestEntry + riskDistance * latestRewardRisk : latestEntry - riskDistance * latestRewardRisk
+    setupStage := 4
+    latestSignalText := (isLong ? "Buy · " : "Sell · ") + str.tostring(latestRewardRisk, "#.0") + "R"
 
-plot(showCurrentLevels ? latestEntry : na, "Latest entry", color=color.new(color.white, 0), linewidth=1, style=plot.style_linebr)
-plot(showCurrentLevels ? latestStop : na, "Latest stop", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
-plot(showCurrentLevels ? latestTarget : na, "Latest target", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+    color directionColor = isLong ? COLOR_GREEN : COLOR_CRIMSON
+    // Begin one bar after the signal so the guide never crosses the entry candle.
+    line entryLine = line.new(x1=bar_index + 1, y1=latestEntry, x2=bar_index + targetLineBars, y2=latestEntry, color=color.new(COLOR_SLATE, 20), width=1, style=line.style_dotted)
+    line stopLine = line.new(x1=bar_index + 1, y1=latestStop, x2=bar_index + targetLineBars, y2=latestStop, color=color.new(COLOR_CRIMSON, 15), width=1, style=line.style_dashed)
+    line targetLine = line.new(x1=bar_index + 1, y1=latestTarget, x2=bar_index + targetLineBars, y2=latestTarget, color=color.new(COLOR_GREEN, 15), width=1, style=line.style_dashed)
+    array.push(riskLines, entryLine)
+    array.push(riskLines, stopLine)
+    array.push(riskLines, targetLine)
 
-plotshape(longSignal, title="A+ Long", text="A+\nLONG", style=shape.labelup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
-plotshape(shortSignal, title="A+ Short", text="A+\nSHORT", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
-barcolor(showBarColors ? (longSignal ? color.lime : shortSignal ? color.red : na) : na)
+    while array.size(riskLines) > maximumTradeHistory * 3
+        line.delete(array.shift(riskLines))
 
-// Scores are available in TradingView's Data Window without cluttering the chart.
-plot(longScore, "Long confluence score", color=color.new(color.lime, 100), display=display.data_window)
-plot(shortScore, "Short confluence score", color=color.new(color.red, 100), display=display.data_window)
+    if not na(activeIfvgBox)
+        box.set_right(activeIfvgBox, bar_index)
+    if not na(activeCeLine)
+        line.set_x2(activeCeLine, bar_index)
 
-var table dashboard = table.new(position.top_right, 2, 5, border_width=1)
+    if showEntryLabels
+        string entryText = (isLong ? "BUY" : "SELL") + " · " + str.tostring(latestRewardRisk, "#.0") + "R"
+        label.new(x=bar_index, y=isLong ? low : high, text=entryText, yloc=isLong ? yloc.belowbar : yloc.abovebar, style=label.style_none, textcolor=directionColor, size=size.small)
+
+// Expire an unfinished chain so an old sweep cannot authorize a much later entry.
+if confirmedBar and setupStage > 0 and setupStage < 4 and not na(setupStartBar) and bar_index - setupStartBar > setupLifetimeBars
+    setupDirection := 0
+    setupStage := 0
+    setupStartBar := na
+    mssBreakLevel := na
+    activeIfvgTop := na
+    activeIfvgBottom := na
+    activeCe := na
+    activeIfvgBar := na
+    activeIfvgBox := na
+    activeCeLine := na
+    latestSignalText := "Expired"
+
+// =============================================================================
+// Minimal, fully transparent dashboard
+// =============================================================================
+var table dashboard = table.new(position.bottom_right, 2, 4, bgcolor=COLOR_TRANSPARENT, frame_color=COLOR_TRANSPARENT, frame_width=0, border_color=COLOR_TRANSPARENT, border_width=0)
+
 if barstate.islast and showDashboard
-    biasText = longTrend ? "BULLISH" : shortTrend ? "BEARISH" : "NEUTRAL"
-    biasColor = longTrend ? color.lime : shortTrend ? color.red : color.silver
-    table.cell(dashboard, 0, 0, "A+ MODEL", text_color=color.white, bgcolor=color.new(color.blue, 55))
-    table.cell(dashboard, 1, 0, signalMode, text_color=color.white, bgcolor=color.new(color.blue, 55))
-    table.cell(dashboard, 0, 1, "Bias", text_color=color.silver)
-    table.cell(dashboard, 1, 1, biasText, text_color=biasColor)
-    table.cell(dashboard, 0, 2, "Long score", text_color=color.silver)
-    table.cell(dashboard, 1, 2, str.tostring(longScore) + "/6", text_color=longScore >= requiredScore ? color.lime : color.silver)
-    table.cell(dashboard, 0, 3, "Short score", text_color=color.silver)
-    table.cell(dashboard, 1, 3, str.tostring(shortScore) + "/6", text_color=shortScore >= requiredScore ? color.red : color.silver)
-    table.cell(dashboard, 0, 4, "Session", text_color=color.silver)
-    table.cell(dashboard, 1, 4, inSession ? "ACTIVE" : "CLOSED", text_color=inSession ? color.lime : color.orange)
+    string trendText = htfTrendDirection == 1 ? "Bullish" : htfTrendDirection == -1 ? "Bearish" : "Neutral"
+    color trendColor = htfTrendDirection == 1 ? COLOR_TEAL : htfTrendDirection == -1 ? COLOR_CRIMSON : COLOR_SLATE
+    string stageText = setupStage == 1 ? "LS confirmed" : setupStage == 2 ? "MSS confirmed" : setupStage == 3 ? "CE pending" : setupStage == 4 ? "Entry active" : "Scanning"
+    string timeframeText = timeframeIsValid ? timeframe.period + " → " + htfTimeframe : "Check timeframe"
+    color timeframeColor = timeframeIsValid ? COLOR_TEXT : COLOR_AMBER
+
+    table.cell(dashboard, 0, 0, "SMART RISK A+", text_color=COLOR_TEXT, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 1, 0, timeframeText, text_color=timeframeColor, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 0, 1, "HTF trend", text_color=COLOR_SLATE, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 1, 1, trendText, text_color=trendColor, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 0, 2, "Sequence", text_color=COLOR_SLATE, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 1, 2, stageText, text_color=COLOR_TEXT, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 0, 3, "Status", text_color=COLOR_SLATE, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
+    table.cell(dashboard, 1, 3, latestSignalText, text_color=COLOR_TEXT, text_size=size.tiny, bgcolor=COLOR_TRANSPARENT)
 else if barstate.islast and not showDashboard
-    table.clear(dashboard, 0, 0, 1, 4)
+    table.clear(dashboard, 0, 0, 1, 3)
 
-// -----------------------------------------------------------------------------
+// =============================================================================
 // Alerts
-// -----------------------------------------------------------------------------
-alertcondition(longSignal, "A+ Long Entry", "A+ LONG entry confirmed on {{ticker}} {{interval}} at {{close}}")
-alertcondition(shortSignal, "A+ Short Entry", "A+ SHORT entry confirmed on {{ticker}} {{interval}} at {{close}}")
-alertcondition(longSignal or shortSignal, "Any A+ Entry", "A+ entry confirmed on {{ticker}} {{interval}} at {{close}}")
+// =============================================================================
+alertcondition(newBullishLiquiditySweep and timeframeIsValid, "Bullish HTF Liquidity Sweep", "Bullish HTF liquidity sweep confirmed on {{ticker}}.")
+alertcondition(newBearishLiquiditySweep and timeframeIsValid, "Bearish HTF Liquidity Sweep", "Bearish HTF liquidity sweep confirmed on {{ticker}}.")
+alertcondition(bullishMss, "Bullish Market Structure Shift", "Bullish lower-timeframe MSS confirmed on {{ticker}} {{interval}}.")
+alertcondition(bearishMss, "Bearish Market Structure Shift", "Bearish lower-timeframe MSS confirmed on {{ticker}} {{interval}}.")
+alertcondition(buySignal, "Smart Risk A+ Buy", "Smart Risk A+ BUY at IFVG consequent encroachment on {{ticker}} {{interval}}.")
+alertcondition(sellSignal, "Smart Risk A+ Sell", "Smart Risk A+ SELL at IFVG consequent encroachment on {{ticker}} {{interval}}.")
+alertcondition(buySignal or sellSignal, "Any Smart Risk A+ Entry", "Smart Risk A+ entry confirmed on {{ticker}} {{interval}}.")
 
-if longSignal
-    alert('{"model":"A+ Entry","side":"long","ticker":"' + syminfo.tickerid + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(latestEntry) + ',"stop":' + str.tostring(latestStop) + ',"target":' + str.tostring(latestTarget) + '}', alert.freq_once_per_bar_close)
-if shortSignal
-    alert('{"model":"A+ Entry","side":"short","ticker":"' + syminfo.tickerid + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(latestEntry) + ',"stop":' + str.tostring(latestStop) + ',"target":' + str.tostring(latestTarget) + '}', alert.freq_once_per_bar_close)
+if buySignal or sellSignal
+    string side = buySignal ? "buy" : "sell"
+    alert('{"model":"Smart Risk A+","side":"' + side + '","ticker":"' + syminfo.tickerid + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(latestEntry) + ',"stop":' + str.tostring(latestStop) + ',"target":' + str.tostring(latestTarget) + ',"rr":' + str.tostring(latestRewardRisk) + '}', alert.freq_once_per_bar_close)
