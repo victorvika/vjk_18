@@ -4,7 +4,16 @@ File: `pine/VJK18_ICT_Model.pine` · Pine Script **v6** · 2 160 lines · 58 use
 (`Liq`, `Fvg`, `Sw`, `Setup`) · 115 inputs in 17 groups · 18 alert event kinds.
 
 There is no Pine compiler available in this repository, so the review was done with a purpose-built static
-analyzer (`tools/pine_check.py`) plus a manual read-through of the whole file. Everything the analyzer can
+analyzer (`tools/pine_check.py`) plus a manual read-through of the whole file, plus the official Pine v6
+reference for every built-in call whose argument order cannot be checked locally.
+
+**Post-delivery fix (reported from the editor):** `string autoHtf(string tf) =>` → `autoHtf(string tf) =>`.
+Pine has **no return-type annotation on user functions**; the leading type token makes the parser read the
+line as a method declaration, which produces `"string" is not a valid method keyword (CE10152)`. Two further
+hardening changes were applied at the same time: the `const int PH_*` constants became plain `int PH_*`
+(avoids depending on the `const` keyword), and the `Sw` field `label` was renamed to `lbl` so no type field
+shares a name with the built-in `label` namespace. Checks 11 and 12 above were added to the analyzer so this
+error class cannot come back. Everything the analyzer can
 prove is listed below; everything it cannot prove is listed in `§6.3` so you know exactly what to confirm on
 the first load.
 
@@ -30,6 +39,8 @@ WARNINGS: none
 | 8 | no function is called before its definition | "Undeclared identifier" |
 | 9 | no function body references a global declared *below* it | "Undeclared identifier" |
 | 10 | no leftover tokens after a constructor call | type errors |
+| 11 | no typed function declarations (`string f(x) =>` is the CE10152 error class) | "'string' is not a valid method keyword" |
+| 12 | no type field or variable named after a reserved word / built-in namespace (`label`, `line`, `box`, …) | "'x' is not a valid type keyword" |
 
 Additional structural guarantees checked manually across the file:
 

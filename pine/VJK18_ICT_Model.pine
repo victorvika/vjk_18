@@ -226,12 +226,12 @@ type Sw
     float  price      = na
     int    bar        = 0
     int    dir        = 0
-    string label      = ""
+    string lbl        = ""
 
 // =============================================================================================
 //  01 - TIMEFRAME ENGINE   (HTF is always analysed from REAL HTF candles)
 // =============================================================================================
-string autoHtf(string tf) =>
+autoHtf(string tf) =>
     switch tf
         "1S"  => "15S"
         "5S"  => "1"
@@ -734,15 +734,15 @@ type Setup
 // PHASES
 // 0 IDLE | 1 FIND_LIQUIDITY | 2 LIQ_IDENTIFIED | 3 HTF_FVG_ACTIVE | 4 SWEPT
 // 5 MSS_CONFIRMED | 6 ENTRY_ZONE_ACTIVE (wait retrace) | 7 TRADE_ACTIVE | 8 DONE
-const int PH_IDLE    = 0
-const int PH_FIND    = 1
-const int PH_LIQ     = 2
-const int PH_FVG     = 3
-const int PH_SWEPT   = 4
-const int PH_MSS     = 5
-const int PH_ZONE    = 6
-const int PH_TRADE   = 7
-const int PH_DONE    = 8
+int PH_IDLE    = 0
+int PH_FIND    = 1
+int PH_LIQ     = 2
+int PH_FVG     = 3
+int PH_SWEPT   = 4
+int PH_MSS     = 5
+int PH_ZONE    = 6
+int PH_TRADE   = 7
+int PH_DONE    = 8
 
 var array<Setup> setups = array.new<Setup>()
 var array<int>   setupSeq = array.new<int>(1, 0)

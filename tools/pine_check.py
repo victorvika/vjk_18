@@ -59,6 +59,14 @@ BUILTIN_CONSTS = {
     "ticker", "type", "log", "method", "polyline",
 }
 
+RESERVED = {
+    "if", "else", "for", "while", "switch", "var", "varip", "type", "enum", "method",
+    "export", "import", "and", "or", "not", "in", "to", "by", "na", "true", "false",
+    "int", "float", "bool", "string", "color", "line", "label", "box", "table", "array",
+    "matrix", "map", "polyline", "linefill", "continue", "break", "return", "series",
+    "simple", "const", "input", "plot", "indicator", "strategy", "library", "new",
+}
+
 ERRORS = []
 WARNINGS = []
 
@@ -202,6 +210,36 @@ def main(path):
             funcs[m.group(1)] = pnames
 
     # ---------------- checks ----------------
+    # Pine has no return-type annotation: "string f(x) =>" is a parse error (CE10152)
+    for n, raw in enumerate(lines, 1):
+        code = blank_strings(strip_comment(raw))
+        if re.match(r"^\s*(?:string|float|int|bool|color|line|label|box|table|polyline|linefill|void|array<[^>]+>|matrix<[^>]+>|map<[^>]+>)\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*=>\s*$", code):
+            err(n, "typed function declaration is not valid Pine - remove the type prefix")
+        if re.match(r"^\s*const\s+", code):
+            warn(n, "'const' declaration keyword - verify it is supported by your Pine version")
+    # fields sharing a name with a built-in namespace or a reserved keyword are risky
+    for tname, fields in udt.items():
+        for f in fields:
+            if f in BUILTIN_NAMESPACES:
+                warn(0, f"type {tname}: field name '{f}' collides with a built-in namespace")
+            if f in RESERVED:
+                err(0, f"type {tname}: field name '{f}' is a reserved keyword")
+
+    # identifiers that shadow a Pine namespace are illegal ("'line' is not a valid type keyword")
+    for n, raw in enumerate(lines, 1):
+        code = blank_strings(strip_comment(raw))
+        if code.strip().startswith("//"):
+            continue
+        code_no_loops = re.sub(r"\b(for|while)\b[^\n]*", "", code)
+        for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)(?!=)", code_no_loops):
+            vartype, name = m.group(1), m.group(2)
+            if name in RESERVED or name in BUILTIN_NAMESPACES:
+                err(n, f"variable '{name}' is named like a reserved word / built-in namespace")
+            TYPE_KEYWORDS = {"int", "float", "bool", "string", "color", "line", "label", "box",
+                             "table", "array", "matrix", "map", "polyline", "linefill",
+                             "series", "simple", "const", "var", "varip"}
+            if vartype in RESERVED and vartype not in TYPE_KEYWORDS and vartype not in udt:
+                err(n, f"'{vartype}' is not a valid type keyword for '{name}'")
     declared = {}                  # global identifier -> line
     # globals declared with var/typed at indent 0 (illegal to reassign with := inside functions)
     global_scalars = set()
