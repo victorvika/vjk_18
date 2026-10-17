@@ -1,0 +1,14 @@
+# downloaded market data (re-create with: bash backtest/fetch_data.sh)
+data/
+*.csv.gz
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/

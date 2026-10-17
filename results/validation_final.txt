@@ -1,0 +1,99 @@
+====================================================================================================
+SHORTLIST (5m, VWAP on, >=50 OOS trades on both symbols) - ranked by worst-case OOS
+====================================================================================================
+ rr  atr_stop_mult  mom_strength_atr  mom_slope_confirm  entry_start_min  min_minutes_to_flat  use_htf_filter  oo_exp_qqq  oo_exp_spy  oo_pf_qqq  oo_pf_spy
+3.0            2.0               0.0               True              600                   45            True    0.023825    0.040258   1.033784   1.066517
+3.0            1.5               0.0               True              600                   45           False    0.059785    0.022450   1.089013   1.025550
+2.5            3.0               0.0               True              600                   45           False    0.018279    0.016241   1.042446   1.032245
+3.0            2.0               0.0              False              600                    0            True    0.023259    0.014328   1.035299   1.013868
+1.5            3.0               0.0               True              600                   45           False    0.014183    0.028252   1.031871   1.059843
+2.0            2.0               0.0               True              600                    0            True    0.012415    0.029034   1.015195   1.042263
+3.0            2.0               0.0              False              585                    0            True    0.011629    0.036639   1.011144   1.055265
+3.0            2.0               0.0               True              585                   45            True    0.009451    0.068737   1.005883   1.119815
+
+--- 5m cand1 rr3 atr2 momK0 slope1 htf1 | QQQ 5m ---
+  full year: n=160  win= 43.1%  PF= 1.12  exp=+0.066R  P&L=$   4,979  maxDD=10.7%
+  bootstrap 95% CI of expectancy: [-0.126R, +0.269R]  (mean +0.067R)
+    2024-10-31->2025-02-05     n= 42  exp=-0.059R  PF=0.89
+    2025-02-05->2025-05-08     n= 36  exp=+0.450R  PF=2.15
+    2025-05-08->2025-08-11     n= 45  exp=-0.326R  PF=0.51
+    2025-08-11->2025-11-07     n= 36  exp=+0.329R  PF=1.80
+
+--- 5m cand1 rr3 atr2 momK0 slope1 htf1 | SPY 5m ---
+  full year: n=156  win= 42.9%  PF= 1.09  exp=+0.053R  P&L=$   3,842  maxDD= 5.1%
+  bootstrap 95% CI of expectancy: [-0.139R, +0.252R]  (mean +0.052R)
+    2024-10-31->2025-02-05     n= 31  exp=+0.006R  PF=1.01
+    2025-02-05->2025-05-08     n= 39  exp=+0.144R  PF=1.30
+    2025-05-08->2025-08-11     n= 49  exp=+0.063R  PF=1.11
+    2025-08-11->2025-11-07     n= 38  exp=+0.004R  PF=1.00
+
+
+--- 5m cand2 rr3 atr1.5 momK0 slope1 htf0 | QQQ 5m ---
+  full year: n=216  win= 29.6%  PF= 0.86  exp=-0.090R  P&L=$  -9,833  maxDD=18.6%
+  bootstrap 95% CI of expectancy: [-0.278R, +0.109R]  (mean -0.089R)
+    2024-10-31->2025-02-05     n= 59  exp=-0.115R  PF=0.82
+    2025-02-05->2025-05-08     n= 70  exp=+0.250R  PF=1.40
+    2025-05-08->2025-08-11     n= 59  exp=-0.357R  PF=0.53
+    2025-08-11->2025-11-07     n= 55  exp=+0.301R  PF=1.55
+
+--- 5m cand2 rr3 atr1.5 momK0 slope1 htf0 | SPY 5m ---
+  full year: n=252  win= 33.7%  PF= 1.07  exp=+0.056R  P&L=$   6,192  maxDD=14.0%
+  bootstrap 95% CI of expectancy: [-0.137R, +0.254R]  (mean +0.056R)
+    2024-10-31->2025-02-05     n= 53  exp=+0.177R  PF=1.30
+    2025-02-05->2025-05-08     n= 68  exp=+0.073R  PF=1.09
+    2025-05-08->2025-08-11     n= 76  exp=-0.066R  PF=0.90
+    2025-08-11->2025-11-07     n= 56  exp=+0.065R  PF=1.09
+
+
+--- 5m cand3 rr2.5 atr3 momK0 slope1 htf0 | QQQ 5m ---
+  full year: n=219  win= 42.0%  PF= 0.95  exp=-0.018R  P&L=$  -2,234  maxDD=13.3%
+  bootstrap 95% CI of expectancy: [-0.148R, +0.117R]  (mean -0.018R)
+    2024-10-31->2025-02-05     n= 52  exp=-0.032R  PF=0.92
+    2025-02-05->2025-05-08     n= 58  exp=+0.110R  PF=1.24
+    2025-05-08->2025-08-11     n= 61  exp=-0.257R  PF=0.48
+    2025-08-11->2025-11-07     n= 48  exp=+0.144R  PF=1.41
+
+--- 5m cand3 rr2.5 atr3 momK0 slope1 htf0 | SPY 5m ---
+  full year: n=215  win= 45.1%  PF= 1.00  exp=+0.004R  P&L=$     106  maxDD= 6.8%
+  bootstrap 95% CI of expectancy: [-0.129R, +0.142R]  (mean +0.004R)
+    2024-10-31->2025-02-05     n= 46  exp=+0.040R  PF=1.10
+    2025-02-05->2025-05-08     n= 58  exp=+0.013R  PF=1.02
+    2025-05-08->2025-08-11     n= 63  exp=-0.007R  PF=0.97
+    2025-08-11->2025-11-07     n= 49  exp=-0.014R  PF=0.96
+
+
+--- 1m KNIFE-EDGE rr3.0 atr2.5 momK1.5 (28 trades/yr) | QQQ 1m ---
+  full year: n= 77  win= 44.2%  PF= 2.04  exp=+0.564R  P&L=$  23,758  maxDD= 5.4%
+  bootstrap 95% CI of expectancy: [+0.163R, +0.973R]  (mean +0.563R)
+    2024-10-31->2025-02-05     n= 17  exp=+0.514R  PF=2.02
+    2025-02-05->2025-05-08     n= 21  exp=+0.015R  PF=1.00
+    2025-05-08->2025-08-11     n= 22  exp=+0.636R  PF=2.31
+    2025-08-11->2025-11-07     n= 17  exp=+1.199R  PF=3.69
+
+--- 1m KNIFE-EDGE rr3.0 atr2.5 momK1.5 (28 trades/yr) | SPY 1m ---
+  full year: n= 69  win= 39.1%  PF= 1.36  exp=+0.223R  P&L=$   7,754  maxDD= 5.7%
+  bootstrap 95% CI of expectancy: [-0.156R, +0.625R]  (mean +0.222R)
+    2024-10-31->2025-02-05     n= 17  exp=+0.398R  PF=1.58
+    2025-02-05->2025-05-08     n= 12  exp=-0.115R  PF=0.84
+    2025-05-08->2025-08-11     n= 27  exp=+0.200R  PF=1.36
+    2025-08-11->2025-11-07     n= 13  exp=+0.355R  PF=1.64
+
+
+--- 5m LAZYBEAR-NATIVE rr3.0 atr1.5 momK0 slopeT htfY vwapY | QQQ 5m ---
+  full year: n=167  win= 35.9%  PF= 1.12  exp=+0.082R  P&L=$   6,511  maxDD=11.9%
+  bootstrap 95% CI of expectancy: [-0.147R, +0.323R]  (mean +0.082R)
+    2024-10-31->2025-02-05     n= 42  exp=-0.135R  PF=0.79
+    2025-02-05->2025-05-08     n= 36  exp=+0.703R  PF=2.49
+    2025-05-08->2025-08-11     n= 49  exp=-0.337R  PF=0.56
+    2025-08-11->2025-11-07     n= 39  exp=+0.300R  PF=1.56
+
+--- 5m LAZYBEAR-NATIVE rr3.0 atr1.5 momK0 slopeT htfY vwapY | SPY 5m ---
+  full year: n=164  win= 37.2%  PF= 1.24  exp=+0.154R  P&L=$  12,743  maxDD= 5.7%
+  bootstrap 95% CI of expectancy: [-0.080R, +0.403R]  (mean +0.156R)
+    2024-10-31->2025-02-05     n= 34  exp=-0.089R  PF=0.86
+    2025-02-05->2025-05-08     n= 39  exp=+0.313R  PF=1.53
+    2025-05-08->2025-08-11     n= 51  exp=+0.234R  PF=1.37
+    2025-08-11->2025-11-07     n= 41  exp=+0.077R  PF=1.10
+
+
+saved -> results/validation_final.json
