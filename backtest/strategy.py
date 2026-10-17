@@ -52,17 +52,17 @@ class Config:
     use_htf_filter: bool = True
 
     # ---- session filter (exchange local time, minutes from midnight) ----
-    entry_start_min: int = 9 * 60 + 45     # 09:45
+    entry_start_min: int = 10 * 60        # 10:00  (shipped config)
     entry_end_min: int = 15 * 60 + 45      # 15:45  (no new entries after)
     flatten_min: int = 15 * 60 + 55       # 15:55  (flat before the bell)
-    min_minutes_to_flat: int = 0          # do not open a trade with less runway
-    mom_slope_confirm: bool = False       # long needs mom > mom[1] (rising momentum)
-    mom_strength_atr: float = 0.0         # |momentum| >= k * ATR  (k = 0 -> off)
+    min_minutes_to_flat: int = 45         # do not open a trade with less runway
+    mom_slope_confirm: bool = True        # long needs mom > mom[1] (rising momentum)
+    mom_strength_atr: float = 0.0         # |momentum| >= k * ATR (0 = off, shipped)
 
     # ---- risk ----
     atr_len: int = 14
-    atr_stop_mult: float = 2.0            # stop = 2.0 * ATR
-    rr: float = 2.0                       # take profit = 2R
+    atr_stop_mult: float = 1.5            # stop = 1.5 * ATR (shipped)
+    rr: float = 3.0                       # take profit = 3R (shipped)
     risk_pct: float = 0.005               # 0.5% of equity per trade
     max_trades_per_day: int = 3
     daily_loss_stop_pct: float = 0.02     # stop trading the day at -2% of START balance

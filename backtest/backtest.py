@@ -422,8 +422,8 @@ def main():
     ap.add_argument("--symbol", default="QQQ")
     ap.add_argument("--tf", type=int, default=5, help="bar size in minutes (1, 5, 15)")
     ap.add_argument("--risk", type=float, default=0.005)
-    ap.add_argument("--atr-mult", type=float, default=2.0)
-    ap.add_argument("--rr", type=float, default=2.0)
+    ap.add_argument("--atr-mult", type=float, default=1.5)   # shipped config
+    ap.add_argument("--rr", type=float, default=3.0)          # shipped config
     ap.add_argument("--no-vwap", action="store_true")
     ap.add_argument("--no-htf", action="store_true")
     ap.add_argument("--max-trades", type=int, default=3)
