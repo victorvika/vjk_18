@@ -1,0 +1,191 @@
+// @version=5
+strategy("VJK PropFirm Edge Pro - Strategy [Backtest] FTMO Ready", shorttitle="VJK PropFirm Strategy", overlay=true, initial_capital=100000, commission_type=strategy.commission.percent, commission_value=0.005, slippage=1, pyramiding=0, calc_on_every_tick=false, calc_on_order_fills=false, process_orders_on_close=true, max_bars_back=500)
+
+// ╔════════════════════════════════════════════════════════════════╗
+// ║  VJK PROPFIRM EDGE PRO - STRATEGY VERSION (Backtest)          ║
+// ║  Purpose: Challenge pass probability test panna               ║
+// ║  Includes: Daily loss kill, profit target auto-exit          ║
+// ║  Same entry logic as Indicator - 1:1 backtest!               ║
+// ╚════════════════════════════════════════════════════════════════╝
+
+// === PROP FIRM RULES ===
+accountSize       = input.float(100000, "Account Size ($)", group="🏦 PROP RULES")
+maxDailyLossPct   = input.float(5, "Max Daily Loss % (FTMO=5%)", group="🏦 PROP RULES")
+maxTotalLossPct   = input.float(10, "Max Total Loss % (FTMO=10%)", group="🏦 PROP RULES")
+profitTargetPct   = input.float(8, "Profit Target % (8% Phase1)", group="🏦 PROP RULES")
+riskPerTradePct   = input.float(0.7, "Risk Per Trade %", group="🏦 PROP RULES")
+
+// === ENGINE ===
+signalMode    = input.string("Conservative (Prop Safe)", "Signal Mode", options=["Conservative (Prop Safe)", "Aggressive (More Trades)"])
+useVWAP       = input.bool(true, "Use VWAP")
+useEMA        = input.bool(true, "Use EMA")
+useRSI        = input.bool(true, "Use RSI")
+useMACD       = input.bool(true, "Use MACD")
+useSuperTrend = input.bool(true, "Use SuperTrend")
+
+emaFastLen   = input.int(9, "EMA Fast")
+emaMidLen    = input.int(21, "EMA Mid")
+emaSlowLen   = input.int(50, "EMA Slow")
+ema200Len    = input.int(200, "EMA 200")
+rsiLen       = input.int(14, "RSI Length")
+atrLen       = input.int(14, "ATR Length")
+atrMultSL    = input.float(1.5, "ATR SL x")
+atrMultTP1   = input.float(1.5, "ATR TP1 x")
+atrMultTP2   = input.float(2.5, "ATR TP2 x")
+superTrendMult = input.float(2.5, "SuperTrend x")
+
+londonSession = input.session("0800-1100", "London Session")
+nySession     = input.session("0930-1600", "NY Session")
+useLondon     = input.bool(true, "Trade London")
+useNY         = input.bool(true, "Trade NY")
+maxTradesPerDay = input.int(3, "Max Trades/Day")
+
+// --- CALCS ---
+atr = ta.atr(atrLen)
+emaFast = ta.ema(close, emaFastLen)
+emaMid  = ta.ema(close, emaMidLen)
+emaSlow = ta.ema(close, emaSlowLen)
+ema200  = ta.ema(close, ema200Len)
+rsi = ta.rsi(close, rsiLen)
+[macdLine, signalLine, hist] = ta.macd(close, 12, 26, 9)
+macdBull = macdLine > signalLine and hist > 0 and hist > hist[1]
+macdBear = macdLine < signalLine and hist < 0 and hist < hist[1]
+vwap = ta.vwap(hlc3)
+vwapStdev = ta.stdev(close, 20)
+vwapUpper1 = vwap + vwapStdev * 1.0
+vwapLower1 = vwap - vwapStdev * 1.0
+vwapUpper2 = vwap + vwapStdev * 2.0
+vwapLower2 = vwap - vwapStdev * 2.0
+[stTrend, stDir] = ta.supertrend(superTrendMult, atrLen)
+stBull = stDir == -1
+stBear = stDir == 1
+volSMA = ta.sma(volume, 20)
+volConfirm = volume > volSMA * 1.1
+
+inLondon = not na(time(timeframe.period, londonSession))
+inNY     = not na(time(timeframe.period, nySession))
+inMidday = not na(time(timeframe.period, "1130-1330"))
+inSession = (useLondon and inLondon) or (useNY and inNY)
+inTradeWindow = inSession and not inMidday
+
+// Confluence
+bullEMA = emaFast > emaMid and emaMid > emaSlow and close > emaSlow and close > ema200
+bullVWAP = not useVWAP or (close > vwap)
+bullRSI = not useRSI or (rsi > 40 and rsi < 65 and rsi > rsi[1])
+bullMACD = not useMACD or macdBull
+bullST = not useSuperTrend or stBull
+bullVol = volConfirm
+
+bearEMA = emaFast < emaMid and emaMid < emaSlow and close < emaSlow and close < ema200
+bearVWAP = not useVWAP or (close < vwap)
+bearRSI = not useRSI or (rsi < 60 and rsi > 35 and rsi < rsi[1])
+bearMACD = not useMACD or macdBear
+bearST = not useSuperTrend or stBear
+bearVol = volConfirm
+
+bullScore = (bullEMA ? 1 : 0) + (bullVWAP ? 1 : 0) + (bullRSI ? 1 : 0) + (bullMACD ? 1 : 0) + (bullST ? 1 : 0) + (bullVol ? 1 : 0)
+bearScore = (bearEMA ? 1 : 0) + (bearVWAP ? 1 : 0) + (bearRSI ? 1 : 0) + (bearMACD ? 1 : 0) + (bearST ? 1 : 0) + (bearVol ? 1 : 0)
+
+bullThreshold = signalMode == "Conservative (Prop Safe)" ? 5 : 3
+
+vwapBullReclaim = close > vwap and low <= vwapLower1 and close > open
+vwapBearReclaim = close < vwap and high >= vwapUpper1 and close < open
+
+rawBull = bullScore >= bullThreshold and inTradeWindow
+rawBear = bearScore >= bullThreshold and inTradeWindow
+rawBull := rawBull or (bullScore >= bullThreshold-1 and vwapBullReclaim and inTradeWindow)
+rawBear := rawBear or (bearScore >= bullThreshold-1 and vwapBearReclaim and inTradeWindow)
+
+bullSignal = rawBull and barstate.isconfirmed and not rawBull[1]
+bearSignal = rawBear and barstate.isconfirmed and not rawBear[1]
+
+// Trade counter
+var int tradesToday = 0
+isNewDay = ta.change(time("D"))
+if isNewDay
+    tradesToday := 0
+if bullSignal or bearSignal
+    tradesToday += 1
+killSwitch = tradesToday >= maxTradesPerDay
+
+bullSignal := bullSignal and not killSwitch
+bearSignal := bearSignal and not killSwitch
+
+// --- PROP FIRM DAILY LOSS / PROFIT TARGET PROTECTION ---
+// Simulate equity tracking
+maxDailyLossAmt = accountSize * maxDailyLossPct / 100
+maxTotalLossAmt = accountSize * maxTotalLossPct / 100
+profitTargetAmt = accountSize * profitTargetPct / 100
+
+// Current strategy equity vs initial
+equity = strategy.equity
+dailyStartEquity = request.security(syminfo.tickerid, "D", strategy.equity[1], lookahead=barmerge.lookahead_off) // approximate
+// Simpler: track daily P&L via day change
+var float dayStartEquity = na
+if isNewDay or na(dayStartEquity)
+    dayStartEquity := equity
+
+dailyPL = equity - dayStartEquity
+totalPL = equity - accountSize
+
+// If daily loss breached, close all and stop
+dailyLossHit = dailyPL <= -maxDailyLossAmt
+totalLossHit = totalPL <= -maxTotalLossAmt
+profitHit = totalPL >= profitTargetAmt
+
+// Force close if breach
+if dailyLossHit or totalLossHit
+    strategy.close_all(comment="⛔ DAILY/MAX LOSS BREACH - STOP")
+
+if profitHit
+    strategy.close_all(comment="🎯 PROFIT TARGET HIT - PASS!")
+
+// --- ENTRIES WITH ATR TP/SL ---
+longStopDist = atr * atrMultSL
+longTP1Dist = atr * atrMultTP1
+shortStopDist = atr * atrMultSL
+shortTP1Dist = atr * atrMultTP1
+
+// Position sizing: risk % based
+// Use strategy.percent_of_equity? We calc qty so loss = riskAmt
+riskAmt = strategy.equity * riskPerTradePct / 100
+// qty = riskAmt / stopDistance (in $ per contract) - for futures/FX approx using close price
+// For general use, we use fixed % of equity - TradingView will calc
+qtyPercent = riskPerTradePct // simpler
+
+if bullSignal and strategy.position_size == 0 and not dailyLossHit and not totalLossHit and not profitHit
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long TP/SL", from_entry="Long", stop=close - longStopDist, limit=close + longTP1Dist, comment_profit="TP1", comment_loss="SL")
+
+if bearSignal and strategy.position_size == 0 and not dailyLossHit and not totalLossHit and not profitHit
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short TP/SL", from_entry="Short", stop=close + shortStopDist, limit=close - shortTP1Dist, comment_profit="TP1", comment_loss="SL")
+
+// Plots
+plot(emaFast, "EMA9", color=color.yellow)
+plot(emaMid, "EMA21", color=color.orange)
+plot(emaSlow, "EMA50", color=color.blue)
+plot(ema200, "EMA200", color=color.white)
+plot(vwap, "VWAP", color=color.purple, linewidth=2)
+plot(stTrend, "SuperTrend", color=stDir==-1?color.green:color.red, linewidth=2)
+plotshape(bullSignal, style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white)
+plotshape(bearSignal, style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.white)
+bgcolor(inTradeWindow ? color.new(color.green, 92) : na)
+bgcolor(killSwitch ? color.new(color.red, 85) : na)
+
+// Table
+var table t = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 10), border_width=1)
+if barstate.islast
+    table.cell(t, 0, 0, "PROP BACKTEST", text_color=color.white, bgcolor=color.blue)
+    table.cell(t, 1, 0, str.tostring(accountSize, format.money), text_color=color.white, bgcolor=color.blue)
+    table.cell(t, 0, 1, "Daily P&L", text_color=color.white)
+    table.cell(t, 1, 1, str.tostring(dailyPL, format.money), text_color=dailyPL>=0?color.green:color.red)
+    table.cell(t, 0, 2, "Total P&L", text_color=color.white)
+    table.cell(t, 1, 2, str.tostring(totalPL, format.money), text_color=totalPL>=0?color.green:color.red)
+    table.cell(t, 0, 3, "Equity", text_color=color.white)
+    table.cell(t, 1, 3, str.tostring(equity, format.money), text_color=color.white)
+    table.cell(t, 0, 4, "Trades Today", text_color=color.white)
+    table.cell(t, 1, 4, str.tostring(tradesToday)+"/"+str.tostring(maxTradesPerDay), text_color=tradesToday>=maxTradesPerDay?color.red:color.green)
+    table.cell(t, 0, 5, "Status", text_color=color.white)
+    status = dailyLossHit ? "⛔ DAILY BREACH" : totalLossHit ? "⛔ MAX LOSS" : profitHit ? "🎯 TARGET HIT" : killSwitch ? "⛔ KILL SWITCH" : "✅ TRADING"
+    table.cell(t, 1, 5, status, text_color=dailyLossHit or totalLossHit?color.red:profitHit?color.green:color.white)

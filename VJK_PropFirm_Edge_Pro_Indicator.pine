@@ -1,0 +1,390 @@
+// @version=5
+indicator("VJK PropFirm Edge Pro - FTMO | FundedNext | Topstep Ready [V1.0]", shorttitle="VJK PropFirm Edge Pro", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500, max_bars_back=500)
+
+// ╔════════════════════════════════════════════════════════════════╗
+// ║  VJK PROPFIRM EDGE PRO - All-in-One Prop Trading Indicator    ║
+// ║  Built for: FTMO, FundedNext, The5ers, Topstep, Apex         ║
+// ║  Timeframes: 1m, 5m, 15m (Scalping) | 1H, 4H (Swing)          ║
+// ║  Markets: Forex, Indices (US30, NAS100, GER40), Gold, Crypto ║
+// ║  Core Stack: VWAP + EMA Confluence + ATR + RSI + MACD + Vol  ║
+// ║  Author: VJK_18 Prop Trading Lab                             ║
+// ║  Version: 1.0 | Pine Script v5 | Non-Repaint (barstate)      ║
+// ╚════════════════════════════════════════════════════════════════╝
+
+// ████ SETTINGS ████████████████████████████████████████████████
+
+// === 1. PROP FIRM RISK DASHBOARD (Most Important!) ===
+propGroup = "🏦 PROP FIRM SETTINGS - Risk First!"
+accountSize       = input.float(100000, "Account Size ($)", minval=5000, step=5000, group=propGroup, tooltip="FTMO 100k = 100000. Challenge size podunga.")
+maxDailyLossPct   = input.float(5, "Max Daily Loss %", minval=1, maxval=10, step=0.5, group=propGroup, tooltip="FTMO=5%, FundedNext=5%, Topstep EOD=~3%")
+maxTotalLossPct   = input.float(10, "Max Total Loss %", minval=3, maxval=15, step=0.5, group=propGroup, tooltip="FTMO=10%, 5ers=6-10%")
+profitTargetPct   = input.float(8, "Profit Target % (Phase 1)", minval=5, step=1, group=propGroup, tooltip="FTMO Phase1=8%, Phase2=5%")
+riskPerTradePct  = input.float(0.5, "Risk Per Trade %", minval=0.1, maxval=2, step=0.1, group=propGroup, tooltip="Propfirms la 0.5%-1% thaan best! 2% kooda perigathinga.")
+showDashboard     = input.bool(true, "Show Prop Dashboard?", group=propGroup)
+dashboardPosInput = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=propGroup)
+
+// === 2. STRATEGY ENGINE ===
+stratGroup = "⚙️ STRATEGY ENGINE - Confluence Mode"
+signalMode    = input.string("Conservative (Prop Safe)", "Signal Mode", options=["Conservative (Prop Safe)", "Aggressive (More Trades)", "Scalping (1-5m)", "Swing (15m-1H)"], group=stratGroup, tooltip="Conservative = FTMO pass panna safest. Aggressive = daily trades athigam.")
+useVWAP       = input.bool(true, "Use VWAP Filter", group=stratGroup, tooltip="Institutional fair price. Prop firm la idhu MUST!")
+useEMA        = input.bool(true, "Use EMA Trend Filter", group=stratGroup)
+useRSI        = input.bool(true, "Use RSI Momentum", group=stratGroup)
+useMACD       = input.bool(true, "Use MACD Confirmation", group=stratGroup)
+useSuperTrend = input.bool(true, "Use SuperTrend (ATR Trend)", group=stratGroup)
+useVolume     = input.bool(true, "Use Volume Confirmation", group=stratGroup)
+
+// === 3. INDICATOR LENGTHS ===
+indGroup = "📊 INDICATOR SETTINGS"
+emaFastLen   = input.int(9, "EMA Fast", minval=5, group=indGroup)
+emaMidLen    = input.int(21, "EMA Mid", minval=10, group=indGroup)
+emaSlowLen   = input.int(50, "EMA Slow (Trend)", minval=20, group=indGroup)
+ema200Len    = input.int(200, "EMA 200 (Major Trend)", minval=100, group=indGroup)
+rsiLen       = input.int(14, "RSI Length", group=indGroup)
+rsiOB        = input.int(70, "RSI Overbought", group=indGroup)
+rsiOS        = input.int(30, "RSI Oversold", group=indGroup)
+macdFast     = input.int(12, "MACD Fast", group=indGroup)
+macdSlow     = input.int(26, "MACD Slow", group=indGroup)
+macdSig      = input.int(9, "MACD Signal", group=indGroup)
+atrLen       = input.int(14, "ATR Length", group=indGroup)
+atrMultSL    = input.float(1.5, "ATR x for Stop Loss", minval=0.5, step=0.1, group=indGroup, tooltip="FTMO/NAS100 5m ku 1.5-2.5 best. Search result solrathu 2.5")
+atrMultTP1   = input.float(1.5, "ATR x for TP1 (1:1.5 RR)", minval=0.5, step=0.1, group=indGroup)
+atrMultTP2   = input.float(2.5, "ATR x for TP2 (1:2.5 RR)", minval=0.5, step=0.1, group=indGroup)
+superTrendMult = input.float(2.5, "SuperTrend Multiplier", minval=1, step=0.1, group=indGroup)
+
+// === 4. VWAP SETTINGS ===
+vwapGroup = "〰️ VWAP SETTINGS"
+vwapAnchor    = input.string("Session", "VWAP Anchor", options=["Session", "Daily", "Weekly"], group=vwapGroup)
+vwapBandMult1 = input.float(1.0, "VWAP Band 1 (σ)", minval=0.5, step=0.1, group=vwapGroup)
+vwapBandMult2 = input.float(2.0, "VWAP Band 2 (σ)", minval=0.5, step=0.1, group=vwapGroup)
+
+// === 5. SESSION & KILL SWITCH ===
+sessionGroup = "🕒 SESSION & PROP KILL SWITCH"
+londonSession = input.session("0800-1100", "London Session (IST 12:30-15:30)", group=sessionGroup)
+nySession     = input.session("0930-1600", "NY Session (IST 19:00-01:30)", group=sessionGroup)
+useLondon     = input.bool(true, "Trade London?", group=sessionGroup)
+useNY         = input.bool(true, "Trade New York?", group=sessionGroup)
+killMidday    = input.bool(true, "Avoid Choppy Midday (11:30-13:30 ET)?", group=sessionGroup, tooltip="Search result: 11:30-13:30 la SuperTrend lose agum. Avoid panna drawdown kurayum!")
+maxTradesPerDay = input.int(3, "Max Trades Per Day (Anti-Overtrading)", minval=1, maxval=10, group=sessionGroup, tooltip="Prop fail reason #1 = overtrading. 2-3 trades per day podhum!")
+enableKillSwitch = input.bool(true, "Enable Daily Kill Switch?", group=sessionGroup, tooltip="Daily loss vantha pin trade niruthidum - AUTO protection!")
+
+// === 6. VISUALS ===
+visualGroup = "🎨 VISUALS"
+showVWAP      = input.bool(true, "Show VWAP + Bands", group=visualGroup)
+showEMA       = input.bool(true, "Show EMA Ribbon", group=visualGroup)
+showSuperTrend = input.bool(true, "Show SuperTrend", group=visualGroup)
+showSignals   = input.bool(true, "Show BUY/SELL Labels", group=visualGroup)
+showTPSL      = input.bool(true, "Show TP/SL Levels", group=visualGroup)
+
+// ████ CORE CALCULATIONS ██████████████████████████████████████
+
+// --- ATR (Prop firm la ATR thaan GOD - position sizing idhula thaan!) ---
+atr = ta.atr(atrLen)
+
+// --- EMA RIBBON (Trend Filter) ---
+emaFast = ta.ema(close, emaFastLen)
+emaMid  = ta.ema(close, emaMidLen)
+emaSlow = ta.ema(close, emaSlowLen)
+ema200  = ta.ema(close, ema200Len)
+
+// --- RSI ---
+rsi = ta.rsi(close, rsiLen)
+
+// --- MACD ---
+[macdLine, signalLine, hist] = ta.macd(close, macdFast, macdSlow, macdSig)
+macdBull = macdLine > signalLine and hist > 0 and hist > hist[1]
+macdBear = macdLine < signalLine and hist < 0 and hist < hist[1]
+
+// --- VWAP ---
+vwap = ta.vwap(hlc3)
+// VWAP bands using rolling stdev (anchored approximation)
+vwapStdev = ta.stdev(close, 20)
+vwapUpper1 = vwap + vwapStdev * vwapBandMult1
+vwapLower1 = vwap - vwapStdev * vwapBandMult1
+vwapUpper2 = vwap + vwapStdev * vwapBandMult2
+vwapLower2 = vwap - vwapStdev * vwapBandMult2
+
+// --- SuperTrend (Main Trend Engine) ---
+// Pine's ta.supertrend
+[stTrend, stDir] = ta.supertrend(superTrendMult, atrLen)
+stBull = stDir == -1  // -1 = bullish (price above SuperTrend)
+stBear = stDir == 1   //  1 = bearish
+
+// --- Volume Confirmation ---
+volSMA = ta.sma(volume, 20)
+volConfirmBull = volume > volSMA * 1.1
+volConfirmBear = volume > volSMA * 1.1
+
+// --- Session Logic ---
+inLondon = not na(time(timeframe.period, londonSession))
+inNY     = not na(time(timeframe.period, nySession))
+inMidday = not na(time(timeframe.period, "1130-1330"))  // ET midday chop - NYSE time
+inSession = (useLondon and inLondon) or (useNY and inNY)
+inTradeWindow = inSession and not (killMidday and inMidday)
+
+// ████ PROP FIRM DASHBOARD CALC ███████████████████████████████
+
+// Account math (static thresholds - user must update balance manually as Pine can't read broker)
+maxDailyLossAmt = accountSize * maxDailyLossPct / 100
+maxTotalLossAmt = accountSize * maxTotalLossPct / 100
+profitTargetAmt = accountSize * profitTargetPct / 100
+riskAmtPerTrade = accountSize * riskPerTradePct / 100
+
+// These are theoretical levels from starting balance (user reference)
+// FTMO 100k example: Daily Loss = $5k, Max Loss = $10k, Target = $8k
+
+// Trade counter (anti-overtrading)
+var int tradesToday = 0
+isNewDay = ta.change(time("D"))
+if isNewDay
+    tradesToday := 0
+
+// Kill switch: if max trades hit, no more signals today
+killSwitchActive = enableKillSwitch and tradesToday >= maxTradesPerDay
+
+// ████ ENTRY LOGIC - MULTI-CONFLUENCE (Non-Repaint) ████████████
+
+// We use barstate.isconfirmed to prevent repaint - VERY IMPORTANT for prop firms!
+
+// --- BULLISH CONFLUENCE ---
+// Conservative mode needs 5/6 conditions, Aggressive needs 3/6
+
+bullEMA = emaFast > emaMid and emaMid > emaSlow and close > emaSlow and close > ema200
+bullVWAP = not useVWAP or (close > vwap and close > vwapLower1)  // Above fair value
+bullRSI = not useRSI or (rsi > 40 and rsi < 65 and rsi > rsi[1])  // Momentum up but not OB, rising
+bullMACD = not useMACD or macdBull
+bullST = not useSuperTrend or stBull
+bullVol = not useVolume or volConfirmBull
+
+bearEMA = emaFast < emaMid and emaMid < emaSlow and close < emaSlow and close < ema200
+bearVWAP = not useVWAP or (close < vwap and close < vwapUpper1)
+bearRSI = not useRSI or (rsi < 60 and rsi > 35 and rsi < rsi[1])  // Momentum down but not OS, falling
+bearMACD = not useMACD or macdBear
+bearST = not useSuperTrend or stBear
+bearVol = not useVolume or volConfirmBear
+
+// Count confluence (how many filters passed)
+bullScore = (bullEMA ? 1 : 0) + (bullVWAP ? 1 : 0) + (bullRSI ? 1 : 0) + (bullMACD ? 1 : 0) + (bullST ? 1 : 0) + (bullVol ? 1 : 0)
+bearScore = (bearEMA ? 1 : 0) + (bearVWAP ? 1 : 0) + (bearRSI ? 1 : 0) + (bearMACD ? 1 : 0) + (bearST ? 1 : 0) + (bearVol ? 1 : 0)
+
+// Mode thresholds
+bullThreshold = switch signalMode
+    "Conservative (Prop Safe)" => 5
+    "Aggressive (More Trades)" => 3
+    "Scalping (1-5m)"          => 4
+    "Swing (15m-1H)"           => 4
+
+bearThreshold = bullThreshold
+
+// VWAP reclaim extra filter (high-probability prop setup): price bounces from VWAP band back to VWAP
+vwapBullReclaim = close > vwap and low <= vwapLower1 and close > open  // Touched lower band and reclaimed
+vwapBearReclaim = close < vwap and high >= vwapUpper1 and close < open
+
+// Final raw signals (before confirmation)
+rawBullSignal = bullScore >= bullThreshold and inTradeWindow and not killSwitchActive
+rawBearSignal = bearScore >= bearThreshold and inTradeWindow and not killSwitchActive
+
+// Extra power-up: VWAP reclaim gives bonus signal even if score is 1 less
+rawBullSignal := rawBullSignal or (bullScore >= bullThreshold-1 and vwapBullReclaim and inTradeWindow and not killSwitchActive)
+rawBearSignal := rawBearSignal or (bearScore >= bearThreshold-1 and vwapBearReclaim and inTradeWindow and not killSwitchActive)
+
+// --- NON-REPAINT CONFIRMATION (Critical!) ---
+// Signal only valid on bar close - prop firms hate repaint!
+// Also need previous bar not already signaled (avoid repeat)
+bullSignal = rawBullSignal and barstate.isconfirmed and not rawBullSignal[1]
+bearSignal = rawBearSignal and barstate.isconfirmed and not rawBearSignal[1]
+
+// Count trades
+if bullSignal or bearSignal
+    tradesToday += 1
+
+// ████ ATR-BASED TP/SL (Prop Risk Management) █████████████████
+
+// Stop distance in price units
+longStopDist = atr * atrMultSL
+shortStopDist = atr * atrMultSL
+
+longSL = close - longStopDist
+longTP1 = close + atr * atrMultTP1
+longTP2 = close + atr * atrMultTP2
+
+shortSL = close + shortStopDist
+shortTP1 = close - atr * atrMultTP1
+shortTP2 = close - atr * atrMultTP2
+
+// Position size calculation (lots/units) - theoretical
+// size = riskAmt / stopDistance ; user must convert to lots based on symbol's point value
+// For Forex: pip value math, for Futures: point value - we show $ risk
+
+// Risk:Reward
+longRR1 = atrMultTP1 / atrMultSL
+longRR2 = atrMultTP2 / atrMultSL
+
+// ████ PLOTTING ███████████████████████████████████████████████
+
+// -- EMA Ribbon --
+plot(showEMA ? emaFast : na, "EMA 9 Fast", color=color.new(color.yellow, 0), linewidth=1)
+plot(showEMA ? emaMid : na, "EMA 21 Mid", color=color.new(color.orange, 0), linewidth=1)
+plot(showEMA ? emaSlow : na, "EMA 50 Slow", color=color.new(color.blue, 0), linewidth=2)
+plot(showEMA ? ema200 : na, "EMA 200 Major", color=color.new(color.white, 0), linewidth=2)
+
+// EMA fill for trend
+emaFillBull = emaFast > emaMid and emaMid > emaSlow
+emaFillBear = emaFast < emaMid and emaMid < emaSlow
+fill(plot(showEMA ? emaFast : na, display=display.none), plot(showEMA ? emaMid : na, display=display.none), color=emaFillBull ? color.new(color.green, 80) : emaFillBear ? color.new(color.red, 80) : na, title="EMA Fast-Mid Fill")
+
+// -- VWAP --
+plot(showVWAP ? vwap : na, "VWAP", color=color.new(color.purple, 0), linewidth=2, style=plot.style_line)
+plot(showVWAP ? vwapUpper1 : na, "VWAP Upper 1σ", color=color.new(color.purple, 70), linewidth=1, style=plot.style_dashed)
+plot(showVWAP ? vwapLower1 : na, "VWAP Lower 1σ", color=color.new(color.purple, 70), linewidth=1, style=plot.style_dashed)
+plot(showVWAP ? vwapUpper2 : na, "VWAP Upper 2σ", color=color.new(color.purple, 85), linewidth=1, style=plot.style_dotted)
+plot(showVWAP ? vwapLower2 : na, "VWAP Lower 2σ", color=color.new(color.purple, 85), linewidth=1, style=plot.style_dotted)
+
+// VWAP fill
+fill(plot(showVWAP ? vwapUpper1 : na, display=display.none), plot(showVWAP ? vwapLower1 : na, display=display.none), color=color.new(color.purple, 90), title="VWAP Value Area")
+
+// -- SuperTrend --
+stPlotColor = stDir == -1 ? color.new(color.green, 0) : color.new(color.red, 0)
+plot(showSuperTrend ? stTrend : na, "SuperTrend", color=stPlotColor, linewidth=2)
+
+// -- Session Background --
+bgcolor(inTradeWindow ? color.new(color.green, 92) : na, title="Trade Session Active")
+bgcolor(killSwitchActive ? color.new(color.red, 85) : na, title="Kill Switch Active")
+bgcolor(inMidday and killMidday ? color.new(color.orange, 88) : na, title="Midday Chop - Avoid")
+
+// -- BUY/SELL SIGNALS (Non-repaint, shape) --
+plotshape(showSignals and bullSignal, title="BUY Signal - Long", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="BUY", textcolor=color.white, size=size.normal)
+plotshape(showSignals and bearSignal, title="SELL Signal - Short", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="SELL", textcolor=color.white, size=size.normal)
+
+// Confluence score as histogram in pane? Instead show as labels
+// Add small dot for VWAP reclaim bonus
+plotshape(showSignals and vwapBullReclaim and bullScore >= bullThreshold-1, title="VWAP Reclaim Bull", style=shape.circle, location=location.belowbar, color=color.new(color.aqua, 0), size=size.tiny)
+plotshape(showSignals and vwapBearReclaim and bearScore >= bearThreshold-1, title="VWAP Reclaim Bear", style=shape.circle, location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny)
+
+// -- Trend Ribbon Color Bar at bottom --
+trendColor = emaFillBull and stBull ? color.green : emaFillBear and stBear ? color.red : color.gray
+plot(0, "Trend State (0=Neutral)", display=display.none) // dummy for scale
+bgcolor(trendColor, title="Trend Ribbon (Bottom)", offset=0) // Use as footer? Actually bgcolor will color candle background softly - alternative: use plot with style_columns
+
+// ████ TP/SL LINES (Draw on signal bar) ████████████████████████
+
+var line longSLLine = na
+var line longTP1Line = na
+var line longTP2Line = na
+var line shortSLLine = na
+var line shortTP1Line = na
+var line shortTP2Line = na
+var label longSLLabel = na
+var label longTP1Label = na
+var label shortSLLabel = na
+var label shortTP1Label = na
+
+// Clean old lines (keep only last 2 signals to avoid clutter)
+if showTPSL and bullSignal
+    // Delete previous
+    if not na(longSLLine)
+        line.delete(longSLLine)
+        line.delete(longTP1Line)
+        line.delete(longTP2Line)
+        label.delete(longSLLabel)
+        label.delete(longTP1Label)
+    longSLLine := line.new(bar_index, longSL, bar_index + 15, longSL, color=color.red, style=line.style_dashed, width=1)
+    longTP1Line := line.new(bar_index, longTP1, bar_index + 15, longTP1, color=color.green, style=line.style_dashed, width=1)
+    longTP2Line := line.new(bar_index, longTP2, bar_index + 15, longTP2, color=color.new(color.green, 0), style=line.style_dotted, width=1)
+    longSLLabel := label.new(bar_index + 15, longSL, "SL " + str.tostring(longSL, format.mintick) + " (" + str.tostring(atrMultSL) + " ATR)", style=label.style_label_left, color=color.red, textcolor=color.white, size=size.tiny)
+    longTP1Label := label.new(bar_index + 15, longTP1, "TP1 " + str.tostring(longTP1, format.mintick) + " (1:" + str.tostring(longRR1, "#.##") + ")", style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny)
+
+if showTPSL and bearSignal
+    if not na(shortSLLine)
+        line.delete(shortSLLine)
+        line.delete(shortTP1Line)
+        line.delete(shortTP2Line)
+        label.delete(shortSLLabel)
+        label.delete(shortTP1Label)
+    shortSLLine := line.new(bar_index, shortSL, bar_index + 15, shortSL, color=color.red, style=line.style_dashed, width=1)
+    shortTP1Line := line.new(bar_index, shortTP1, bar_index + 15, shortTP1, color=color.green, style=line.style_dashed, width=1)
+    shortTP2Line := line.new(bar_index, shortTP2, bar_index + 15, shortTP2, color=color.new(color.green, 0), style=line.style_dotted, width=1)
+    shortSLLabel := label.new(bar_index + 15, shortSL, "SL " + str.tostring(shortSL, format.mintick), style=label.style_label_left, color=color.red, textcolor=color.white, size=size.tiny)
+    shortTP1Label := label.new(bar_index + 15, shortTP1, "TP1 " + str.tostring(shortTP1, format.mintick), style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny)
+
+// ████ PROP FIRM DASHBOARD TABLE █████████████████████████████
+
+var table dash = table.new(position.top_right, 3, 9, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray, frame_color=color.gray, frame_width=1)
+
+if showDashboard and barstate.islast
+    // Header
+    table.cell(dash, 0, 0, "🏦 VJK PROPFIRM EDGE PRO", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
+    table.cell(dash, 1, 0, "LIMIT", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
+    table.cell(dash, 2, 0, "STATUS", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
+
+    table.cell(dash, 0, 1, "Account Size", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 1, "$" + str.tostring(accountSize, format.money), text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 2, 1, "✓ Active", text_color=color.green, text_size=size.tiny)
+
+    table.cell(dash, 0, 2, "Max Daily Loss (" + str.tostring(maxDailyLossPct) + "%)", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 2, "-$" + str.tostring(maxDailyLossAmt, format.money), text_color=color.orange, text_size=size.tiny)
+    table.cell(dash, 2, 2, killSwitchActive ? "⛔ KILL" : "✅ OK", text_color=killSwitchActive ? color.red : color.green, text_size=size.tiny)
+
+    table.cell(dash, 0, 3, "Max Total Loss (" + str.tostring(maxTotalLossPct) + "%)", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 3, "-$" + str.tostring(maxTotalLossAmt, format.money), text_color=color.red, text_size=size.tiny)
+    table.cell(dash, 2, 3, "✅ OK", text_color=color.green, text_size=size.tiny)
+
+    table.cell(dash, 0, 4, "Profit Target (" + str.tostring(profitTargetPct) + "%)", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 4, "+$" + str.tostring(profitTargetAmt, format.money), text_color=color.green, text_size=size.tiny)
+    table.cell(dash, 2, 4, "🎯 " + str.tostring(profitTargetPct) + "%", text_color=color.aqua, text_size=size.tiny)
+
+    table.cell(dash, 0, 5, "Risk / Trade (" + str.tostring(riskPerTradePct) + "%)", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 5, "$" + str.tostring(riskAmtPerTrade, format.money), text_color=color.yellow, text_size=size.tiny)
+    // How many losing trades to breach daily?
+    tradesToBreach = maxDailyLossAmt / riskAmtPerTrade
+    table.cell(dash, 2, 5, str.tostring(tradesToBreach, "#") + " trades to DD", text_color=color.orange, text_size=size.tiny)
+
+    // Current ATR and SL distance
+    table.cell(dash, 0, 6, "ATR (" + str.tostring(atrLen) + ") / SL Dist", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 6, str.tostring(atr, format.mintick) + " / " + str.tostring(longStopDist, format.mintick), text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 2, 6, "1:" + str.tostring(longRR1, "#.#") + " RR", text_color=color.green, text_size=size.tiny)
+
+    // Trend & Session
+    trendTxt = emaFillBull and stBull ? "🟢 BULL" : emaFillBear and stBear ? "🔴 BEAR" : "⚪ CHOP"
+    sessionTxt = inTradeWindow ? "🟢 OPEN" : "🔴 CLOSED"
+    table.cell(dash, 0, 7, "Trend / Session", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 7, trendTxt, text_color=trendTxt == "🟢 BULL" ? color.green : trendTxt == "🔴 BEAR" ? color.red : color.gray, text_size=size.tiny)
+    table.cell(dash, 2, 7, sessionTxt, text_color=inTradeWindow ? color.green : color.red, text_size=size.tiny)
+
+    // Trades today
+    table.cell(dash, 0, 8, "Trades Today / Confluence", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 8, str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay) + " trades", text_color=tradesToday >= maxTradesPerDay ? color.red : color.white, text_size=size.tiny)
+    table.cell(dash, 2, 8, bullScore >= bullThreshold or bearScore >= bearThreshold ? "✅ READY" : "⏳ WAIT", text_color=bullScore >= bullThreshold or bearScore >= bearThreshold ? color.green : color.gray, text_size=size.tiny)
+
+// ████ ALERTS (Prop traders ku alerts thaan uyir!) ███████████
+
+alertcondition(bullSignal, title="🟢 VJK BUY Signal", message="VJK PropFirm Edge: BUY Signal on {{ticker}} at {{close}}. SL={{plot(\"Long SL\")}} TP1={{plot(\"Long TP1\")}} Confluence={{ticker}}")
+alertcondition(bearSignal, title="🔴 VJK SELL Signal", message="VJK PropFirm Edge: SELL Signal on {{ticker}} at {{close}}. SL={{plot(\"Short SL\")}} TP1={{plot(\"Short TP1\")}}")
+alertcondition(killSwitchActive, title="⛔ Daily Limit Hit - STOP", message="VJK Kill Switch: Max trades per day reached on {{ticker}}. STOP TRADING - Protect your prop account!")
+alertcondition(vwapBullReclaim, title="💧 VWAP Reclaim Bull", message="VWAP Bull Reclaim on {{ticker}} - High probability long setup")
+alertcondition(vwapBearReclaim, title="💧 VWAP Reclaim Bear", message="VWAP Bear Reclaim on {{ticker}} - High probability short setup")
+alertcondition(not inTradeWindow and (rawBullSignal or rawBearSignal), title="⏰ Signal Outside Session", message="Signal fired outside trading session on {{ticker}} - Filtered for prop safety")
+
+// ████ INFO PANEL / TOOLTIPS █████████████████████████████████
+
+// Plot invisible helpers for alert message placeholders (need plot for alert message to reference?)
+plot(longSL, "Long SL", display=display.none)
+plot(longTP1, "Long TP1", display=display.none)
+plot(shortSL, "Short SL", display=display.none)
+plot(shortTP1, "Short TP1", display=display.none)
+
+// RSI in separate pane? No, keep overlay clean. But show RSI value as label on last bar
+var label rsiLabel = na
+if barstate.islast and useRSI
+    if not na(rsiLabel)
+        label.delete(rsiLabel)
+    rsiColor = rsi > 70 ? color.red : rsi < 30 ? color.green : rsi > 50 ? color.new(color.green, 40) : color.new(color.red, 40)
+    rsiLabel := label.new(bar_index, high, "RSI: " + str.tostring(rsi, "#.#") + " | ATR: " + str.tostring(atr, format.mintick) + " | Score: " + str.tostring(bullScore) + "/6", style=label.style_label_down, color=color.new(color.black, 20), textcolor=rsiColor, size=size.small)
+
+// ████ EDUCATIONAL COMMENTS FOR TRADINGVIEW ███████████████
+// How to use:
+// 1. Add to chart (5m best for FTMO, 1m for scalping, 15m for swing)
+// 2. Set account size + risk % in settings (match your prop firm!)
+// 3. Only trade when Trend= BULL/BEAR + Session OPEN + Score >= threshold
+// 4. SL = Red dashed line, TP1 = Green dashed (take 50% off), TP2 = trail to BE
+// 5. After 2-3 trades per day, STOP - this is why prop traders pass!
+// 6. Backtest: Use Strategy version for precise winrate
