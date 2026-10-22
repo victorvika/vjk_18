@@ -8,7 +8,7 @@ built from reference material in this repo. Each skill is a folder with a `SKILL
 
 | Skill | What it does | Built from |
 |---|---|---|
-| [`capcut-desktop-mastery`](capcut-desktop-mastery/SKILL.md) | End-to-end CapCut Desktop editing: setup → cut → sound → text → effects → colour → export. English + Tamil explanations. | [Mastering CapCut (Basic to Advanced) தமிழ் 2025](https://youtu.be/BSTuxpc9FU0) by Prakash |
+| [`capcut-desktop-mastery`](capcut-desktop-mastery/SKILL.md) | End-to-end CapCut Desktop editing: setup → cut → sound → text → effects → colour → export, plus a headless ffmpeg renderer so an AI-written edit plan can become a real MP4. English + Tamil explanations. | [Mastering CapCut (Basic to Advanced) தமிழ் 2025](https://youtu.be/BSTuxpc9FU0) by Prakash |
 
 ## Structure
 
@@ -46,12 +46,29 @@ The skill triggers on its own.
 
 ```bash
 cd skills/capcut-desktop-mastery/scripts
-python3 -m unittest test_export_plan -v     # 23 tests
+
+python3 -m unittest discover -p "test_*.py" -v   # 82 tests
+
+# export settings for a platform
 python3 export_plan.py reels --duration 0:45
-python3 export_plan.py --list
+
+# transcript -> timed SRT (no speech recognition needed)
+python3 make_srt.py script.txt --duration 0:45 --lang ta --out captions.srt --check
+
+# render an AI-written edit plan into a finished MP4
+python3 edl_render.py plan.json --validate-only
+python3 edl_render.py plan.json --workdir work
 ```
 
-No third-party dependencies; Python 3.8+.
+All scripts are stdlib-only, Python 3.8+. `edl_render.py` needs an `ffmpeg` binary -
+install it, or `pip install imageio-ffmpeg` and pass `--ffmpeg <path>` / set `FFMPEG_BIN`.
+
+### Using it from Gemini / ChatGPT
+
+Copy `SKILL.md` into a Gemini Gem or a Custom GPT and upload
+`references/edl-format.md` + `assets/prompt-pack.md` as knowledge. The model then returns a shot
+list and an EDL JSON instead of generic advice; the JSON is what `edl_render.py` executes.
+Details: `capcut-desktop-mastery/references/ai-agent-workflow.md`.
 
 ## Adding a new skill
 

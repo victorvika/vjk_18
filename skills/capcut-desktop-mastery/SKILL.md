@@ -1,6 +1,6 @@
 ---
 name: capcut-desktop-mastery
-description: Coach and execute CapCut Desktop (PC/Mac) video edits end to end - project setup, rough and fine cutting, LUTs and colour, audio ducking, captions, picture-in-picture, rotoscoping, chroma key, keyframe animation, zoom/punch-in effects, and platform-correct export. Use when the user wants to edit a video in CapCut, asks how a CapCut tool works, needs export settings for YouTube, Shorts, Reels, TikTok, or WhatsApp, or references the Tamil "Mastering CapCut" masterclass by Prakash.
+description: Coach and execute video edits end to end - CapCut Desktop workflow, project setup, rough and fine cutting, LUTs and colour, audio ducking, captions (including Tamil), picture-in-picture, rotoscoping, chroma key, keyframe animation, zoom effects, and platform-correct export - plus a headless renderer that turns an AI-written EDL into a finished MP4 with ffmpeg. Use when the user wants to edit a video in CapCut, asks how a CapCut tool works, needs export settings for YouTube, Shorts, Reels, TikTok or WhatsApp, wants Gemini/ChatGPT/Claude to plan or perform an edit, or references the Tamil "Mastering CapCut" masterclass by Prakash.
 metadata:
   source_video: https://youtu.be/BSTuxpc9FU0
   source_title: Mastering CapCut (Basic to Advanced) தமிழ் 2025 - Full Masterclass - Prakash
@@ -141,7 +141,52 @@ It returns canvas, fps, bitrate, codec, container, audio, estimated file size an
 
 Never upscale 1080p to 4K for "quality". Never export H.265 to a client who will open it on an old phone.
 
-## Step 8 - QA gate before you call it done
+## Step 8 - Let an AI agent do the cutting (optional but powerful)
+
+When the user asks "can Gemini / ChatGPT edit my video for me?", the honest answer is:
+**an AI chat is the director, not the editor.** It cannot drive CapCut's timeline and cannot
+export a CapCut project file. What it can do is decide the edit, and that decision can be
+executed two ways.
+
+### Route A - AI plans, the human cuts in CapCut
+
+Give the model `assets/prompt-pack.md` prompt 1, get back a shot list, follow it in CapCut.
+The shot list is the deliverable - a paper edit with timecodes.
+
+### Route B - AI plans, the script renders (fully automated)
+
+1. AI returns an EDL (`references/edl-format.md`, example in `assets/edl.example.json`).
+2. Validate, then render:
+
+```bash
+python3 scripts/edl_render.py plan.json --validate-only
+python3 scripts/edl_render.py plan.json --workdir work
+```
+
+3. The renderer trims, re-frames to the canvas, applies speed changes, concatenates, ducks
+   music under the voice with a sidechain, burns the SRT with a safe-zone margin, and encodes
+   H.264/AAC MP4. Result can be delivered as-is or opened in CapCut for a grade.
+
+4. Captions without speech recognition:
+
+```bash
+python3 scripts/make_srt.py script.txt --duration 0:45 --lang ta --out captions.srt --check
+```
+
+**Division of labour (say this to the user):**
+
+| Job | Who does it |
+|---|---|
+| Deciding the cut, hooks, order, length | AI chat |
+| Reading a 20-minute transcript for the 5 best moments | AI chat (excellent at this) |
+| Trimming, reframing, speed, concat, captions, mix, encode | `edl_render.py` |
+| Grade, LUTs, masks, keyframes, PIP, fancy transitions | CapCut, by hand |
+| Judging whether a cut *feels* right | Human, always |
+
+**Never claim** an AI chat will return a finished CapCut project. It cannot, and CapCut has no
+public EDL/XML import. Say it plainly and offer route A or B instead.
+
+## Step 9 - QA gate before you call it done
 
 Run `assets/reel-qa-checklist.md` top to bottom. Minimum:
 
@@ -172,6 +217,26 @@ Run `assets/reel-qa-checklist.md` top to bottom. Minimum:
 | `references/export-and-delivery.md` | Codec/bitrate questions, client delivery, archive rules |
 | `references/troubleshooting.md` | Lag, crash, green screen fringe, washed-out colour, audio drift, export failure |
 | `references/tamil-glossary.md` | Choosing the Tamil word for a CapCut concept |
+| `references/ai-agent-workflow.md` | User asks whether Gemini / ChatGPT / Claude can do the edit |
+| `references/edl-format.md` | Writing or debugging a `plan.json` for the renderer |
+| `assets/prompt-pack.md` | Prompts that make an AI chat produce an executable edit |
+| `assets/edl.example.json` | Working EDL to copy and fill |
+
+## Scripts at a glance
+
+| Script | Purpose | Test |
+|---|---|---|
+| `scripts/edl_render.py` | Render an EDL to MP4 (trim, speed, concat, duck, burn captions) | `test_edl_render.py` |
+| `scripts/make_srt.py` | Transcript → timed SRT, no ASR needed | `test_make_srt.py` |
+| `scripts/export_plan.py` | Platform export presets + fps/bitrate/size warnings | `test_export_plan.py` |
+
+```bash
+cd skills/capcut-desktop-mastery/scripts
+python3 -m unittest discover -p "test_*.py" -v
+```
+
+Every script is stdlib-only. `edl_render.py` needs an `ffmpeg` binary; if it is missing, either
+install it or `pip install imageio-ffmpeg` and pass `--ffmpeg <path>` / `FFMPEG_BIN`.
 
 ## Scope and honesty
 

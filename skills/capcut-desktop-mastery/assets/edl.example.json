@@ -1,0 +1,58 @@
+{
+  "output": "exports/reel_v01.mp4",
+  "canvas": { "width": 1080, "height": 1920 },
+  "fps": 30,
+  "background": "black",
+  "clips": [
+    {
+      "source": "footage/hook.mp4",
+      "in": "0:04.2",
+      "out": "0:09.8",
+      "label": "hook - hands on fabric, no dialogue"
+    },
+    {
+      "source": "footage/interview.mp4",
+      "in": "0:31.0",
+      "out": "0:41.5",
+      "volume": 1.0,
+      "label": "answer - 'three hours for a full set'"
+    },
+    {
+      "source": "footage/broll_detail.mp4",
+      "in": "0:12.0",
+      "out": "0:16.0",
+      "speed": 1.5,
+      "volume": 0.0,
+      "label": "b-roll - close up of stitching, sped up"
+    },
+    {
+      "source": "footage/cta.mp4",
+      "in": "0:00.5",
+      "out": "0:03.5",
+      "label": "cta - logo and contact line"
+    }
+  ],
+  "music": {
+    "source": "audio/bed.mp3",
+    "volume": 0.18,
+    "duck": true,
+    "fade_in": 0.5,
+    "fade_out": 1.2
+  },
+  "captions": {
+    "srt": "captions/reel_v01.srt",
+    "font": "Noto Sans Tamil",
+    "font_size": 56,
+    "outline": 3,
+    "position": "bottom",
+    "safe_bottom_pct": 22,
+    "fonts_dir": "fonts"
+  },
+  "export": {
+    "codec": "h264",
+    "crf": 18,
+    "preset": "medium",
+    "audio_bitrate": "192k"
+  },
+  "loudness": -14
+}
