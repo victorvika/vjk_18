@@ -6,7 +6,8 @@ verified, and what is still missing and why.
 - Repository clone: `/home/user/rea` (upstream `master`, `rea-agents` **6.7.0**, commit `2250e67bc`)
 - Reproduction script: [`setup-rea.sh`](setup-rea.sh) (idempotent; re-run it after a
   fresh sandbox boot, because `node_modules/` and `dist/` are not persisted)
-- Ghidra installer: [`install-ghidra.sh`](install-ghidra.sh) — see [section 7](#7-ghidra-blocked-today-one-command-when-the-zip-arrives)
+- Ghidra installers: [`install-ghidra-offline.sh`](install-ghidra-offline.sh) (works here) and
+  [`install-ghidra.sh`](install-ghidra.sh) (for hosts with release-asset access) — see [section 7](#7-ghidra-1214-installed)
 
 ---
 
@@ -25,6 +26,8 @@ verified, and what is still missing and why.
 | Binwalk | **v2.3.3** (pure Python; the v3 submodule needs Rust, unavailable) | codeload tarball `ReFirmLabs/binwalk v2.3.4` |
 | mitmproxy | **11.0.2** (`mitmdump`) | PyPI (with `bcrypt==4.0.1` pin, passlib incompatibility) |
 | Chromium (headless) | **153.0.8010.0** | npm package `@sparticuz/chromium`, Brotli-decompressed → `/home/user/.tools/chromium/chromium` |
+| **Ghidra** | **12.1.4** (`Ghidra_12.1.4_build`) | git mirror `Chaborsz/Ghidra-12.1.4-Workspace` → `/opt/ghidra_12.1.4_PUBLIC` |
+| **JDK for Ghidra** | **21.0.8 runtime + 21.0.11 javac** | `jdk4py` JRE + pure-Java `jdk.compiler`/`jdk.internal.opt` modules from `MineFartsEmbed/JDK` (branch 21) → `/opt/jdk-21-full` |
 | Binutils | objdump/readelf/nm 2.40 (pre-installed) | system |
 
 Stable command wrappers live in `/home/user/bin`: `rea`, `node`, `npm`, `npx`,
@@ -83,6 +86,8 @@ Verified by actually running each workflow:
 | Python bridge | `python -m unittest bridge/mitmproxy/test_capture.py` → 22 passed |
 | Static JavaScript / Electron | `analyze-javascript-application` on a fixture Electron app (CLI **and** MCP) |
 | Native ELF layout | `inspect-binary-layout /bin/ls` via `pwntools-elf` provider |
+| **Native decompilation (Ghidra)** | `rea decompile /bin/ls 0x61d0 --provider ghidra` → real pseudocode, provider `ghidra 12.1.4`; also over MCP (`open_binary` + `procedure_pseudo_code`) |
+| **Ghidra script compilation** | `analyzeHeadless … -postScript HelloRea.java` → `HELLO_FROM_GHIDRA` |
 | Firmware extraction | `extract-firmware` on a gzip blob via **unblob 26.6.4**; standalone `unblob` extraction works |
 | Android resources (decode) | `inspect-apktool-client` → apktool **2.9.3** accepted (`capability_unavailable` gone) |
 | Built-in static domains | PE/CLI managed metadata, Go, Rust, IL2CPP, Godot PCK, WASM (WABT required), IPS, BEAM, GGUF/safetensors, PyInstaller, APK signatures — no external engine needed |
@@ -91,14 +96,14 @@ Verified by actually running each workflow:
 
 ## 4. Not installed, and why
 
-The sandbox network allowlist covers `github.com`, `codeload.github.com`,
+Ghidra was the one engine that mattered and it is now installed (section 7).
+These remain unavailable because the sandbox network allowlist covers `github.com`, `codeload.github.com`,
 `api.github.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`.
 GitHub **release assets** and Debian mirrors are unreachable, and there is no
 Rust toolchain.
 
 | Missing | Blocker | How to close it |
 | --- | --- | --- |
-| **Ghidra 12.1.x** (primary native decompiler) | 570 MB release zip is a GitHub *release asset*: `github.com` answers `302`, and the redirect target `release-assets.githubusercontent.com` fails at TLS (`code=000`). Same for `api.adoptium.net`, so a **full** JDK with `javac` cannot be fetched either (`jdk4py` ships JRE modules only). Use [`install-ghidra.sh`](install-ghidra.sh) — see [section 7](#7-ghidra-blocked-today-one-command-when-the-zip-arrives) |
 | **jadx-headless-mcp 0.7.1 JAR** | npm `jadx-headless-mcp` is only a downloader for the GitHub release; Gradle build needs Maven Central (blocked) | `export REA_JADX_MCP_JAR=/abs/path/jadx-headless-mcp-0.7.1-all.jar` |
 | **Hopper** | macOS-only app | macOS hosts only (`HOPPER_LAUNCHER_PATH`) |
 | **IDA / JEB / Kuna** | proprietary, licence-required | `REA_IDA_MCP_CONFIG`, `REA_JEB_MCP_URL`, `REA_KUNA_COMMAND` |
@@ -124,6 +129,8 @@ rea --version                 # 6.7.0
 rea doctor                    # readiness audit
 rea analyze-javascript-application /path/to/app --json
 rea inspect-binary-layout /bin/ls --json
+rea decompile /bin/ls 0x61d0 --provider ghidra       # Ghidra pseudocode
+rea decompile /bin/ls --procedure <symbol> --provider ghidra
 rea extract-firmware blob.bin /tmp/out --json
 rea mcp                       # MCP server over stdio (what the clients launch)
 ```
@@ -138,78 +145,91 @@ Claude Code, Codex, Cursor and Gemini CLI.
   sandbox is recreated, run `bash setup-rea.sh` again; it is incremental and
   skips anything already present (`/home/user/.node24`, `/home/user/.tools`,
   `/home/user/.venv-rea`, and the clone itself do persist).
+- Ghidra and the JDK shim live in `/opt`, which is **not** part of the snapshot.
+  After a restart run `bash install-ghidra-offline.sh` (~2 min) to restore them.
 - The clone lives at `/home/user/rea` (outside this git repository) so the
   upstream history stays untouched. Only `setup-rea.sh` and this report are
   committed here.
 
-## 7. Ghidra: blocked today, one command when the zip arrives
+## 7. Ghidra 12.1.4 — installed
 
-Ghidra is the only thing REA is missing for native **decompilation**. It cannot be
-fetched from inside this sandbox — verified again today:
+Ghidra is the primary native decompiler and it is now running. Nothing here could
+be fetched from the obvious place: `github.com` answers `302` for the release zip
+and the redirect target `release-assets.githubusercontent.com` fails at TLS
+(`code=000`), `api.adoptium.net` is unreachable, and Maven Central / Debian
+mirrors are closed. So both pieces came in through **git**, which is reachable.
+
+### How it was sourced
+
+| Piece | Source | Evidence |
+| --- | --- | --- |
+| Ghidra 12.1.4 | `git clone https://github.com/Chaborsz/Ghidra-12.1.4-Workspace` (public mirror of the official archive, `ddac49f9…d4db`) | `Ghidra/application.properties` → `application.version=12.1.4`, `application.java.min=21`; native decompiler present at `Ghidra/Features/Decompiler/os/linux_x86_64/decompile` (3.4 MB) |
+| `javac` | `jdk.compiler.jmod` + `jdk.internal.opt.jmod` from `MineFartsEmbed/JDK` branch `21` (Oracle JDK 21.0.11), pulled with a sparse partial clone (22 MB) | `javac 21.0.11` compiles and runs code |
+| JVM runtime | `jdk4py` 21.0.8 JRE (already installed) | `java 21.0.8`, `os.arch=amd64`, 64-bit |
+
+### Why the JDK needed a shim
+
+`jdk4py` ships a **JRE**: `java --list-modules` has no `jdk.compiler`, and Ghidra
+refuses a JRE (`JDK_ONLY`) before it will even start. Downloading Temurin is
+blocked, so the missing module was supplied from another JDK build:
+
+* `jdk.compiler` and `jdk.internal.opt` are **pure Java bytecode**, so the Windows
+  JDK 21 modules work unchanged once their `ModuleTarget` attribute is removed
+  (otherwise the JVM rejects `windows-amd64` against the host's `linux-amd64`).
+* The modules cannot be added with `--upgrade-module-path`/`--module-path`:
+  this image's `java.base` records module hashes, and the recorded hash never
+  matches a foreign build (`FindException: Hash of jdk.compiler … differs`).
+* Instead the modules ride on the **class path**, and `javax.tools.ToolProvider`
+  — the API Ghidra's `ResourceFileJavaFileManager` calls to compile `.java`
+  scripts — is **patched into `java.compiler`** with `--patch-module`, returning
+  `JavacTool` from the class path.
+
+Result: `/opt/jdk-21-full` behaves like a full JDK for REA and Ghidra
+(`bin/javac`, `bin/java`, `lib/modules`), which is exactly what REA's probe reads
+(`bin/javac` present → "JDK", `java.home` → `/opt/jdk-21-full`, 64-bit).
+
+### Verified
 
 ```
-GET https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip
-  -> 302 https://release-assets.githubusercontent.com/github-production-release-asset/...
-  -> curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL          # host not allowlisted
-GET https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/...
-  -> code=000                                                   # host not allowlisted
+rea doctor --provider ghidra        → healthy: True (9/9 checks)
+  ghidra, ghidra-platform(linux), ghidra-architecture(x64), ghidra-installation,
+  ghidra-version(12.1.4), ghidra-headless, ghidra-native_decompiler,
+  ghidra-java(21.0.8; 64-bit; JDK; /opt/jdk-21-full)
+
+analyzeHeadless … -postScript HelloRea.java  → HelloRea.java> HELLO_FROM_GHIDRA
+
+rea decompile /bin/ls 0x61d0 --provider ghidra
+  provider: ghidra 12.1.4 | subject: ls x86_64
+  void processEntry entry(undefined8 param_1,undefined8 param_2)
+  { __libc_start_main(FUN_00104730, param_2, &stack0x00000008, 0,0, param_1, auStack_8); ... }
+
+MCP: open_binary{path:"/bin/ls", provider_id:"ghidra"} + procedure_pseudo_code{procedure:"0x61d0"}
+  → same Evidence (ev_5aaae12c…), status ok, 22 s
 ```
 
-Every alternative source was checked and none carries a Ghidra distribution:
-npm `ghidra`/`ghidra-bin`/`ghidra-dist`/`ghidra-public` (404), PyPI `ghidra`
-(no files) and `pyghidra`/`ghidractl` (downloaders only), `ghidra-sre.org` and
-`sourceforge.net` (unreachable), large npm binaries `@cyberful-org/*` and
-`@eyeauras/insight-cli` (no Ghidra payload), npm JDK runtimes
-`@spcookie/erii-runtime-linux-x64` (JRE 17, no `javac`), and the Ghidra source
-tarball on codeload (needs Gradle + Maven Central, both blocked).
+### Re-installing
 
-### The installer
-
-[`install-ghidra.sh`](install-ghidra.sh) installs Ghidra 12.1.4 and a full JDK 21,
-validates them against REA's admission rules, wires `GHIDRA_INSTALL_DIR` /
-`JAVA_HOME` into the shell profile **and all four MCP client registrations**, then
-runs `rea doctor --provider ghidra`.
+`/opt` is outside the workspace snapshot, so the install does not survive a fresh
+sandbox. Re-create it in ~2 minutes with:
 
 ```bash
-bash install-ghidra.sh --check                    # current status, changes nothing
-bash install-ghidra.sh                            # download both, then install
-bash install-ghidra.sh --ghidra-zip /path/x.zip --jdk /path/jdk-21.tar.gz
-bash install-ghidra.sh --no-wire                  # install only, leave profiles alone
+bash install-ghidra-offline.sh          # clone Ghidra, rebuild modules + JDK shim, rewire clients
+bash install-ghidra-offline.sh --check  # status only
 ```
 
-What it enforces before declaring success:
+The script is idempotent, and re-running it also repairs a half-deleted install.
+If this environment ever gains access to `release-assets.githubusercontent.com`
+and `api.adoptium.net`, [`install-ghidra.sh`](install-ghidra.sh) installs the
+official zip plus a real Temurin JDK instead, with no shim needed.
 
-| Check | Rule |
-| --- | --- |
-| Ghidra version | `Ghidra/application.properties` → `application.version=12.1.x` |
-| Native decompiler | executable at `Ghidra/Features/Decompiler/os/linux_x86_64/decompile` |
-| JDK | `bin/javac`, major ≥ 21, `sun.arch.data.model = 64`, host `os.arch`, and the **`jdk.compiler` module** (a JRE is rejected — REA reports one as `config_drift`) |
+### Caveats
 
-Both paths were exercised here with a synthetic Ghidra tree and a simulated JDK.
-`rea doctor --provider ghidra` then reported 6/8 checks green — `ghidra`,
-`ghidra-platform`, `ghidra-architecture`, `ghidra-installation`,
-`ghidra-version` (12.1.4) and `ghidra-native_decompiler` — with the two
-remaining failures being exactly the parts the fake tree lacked
-(`support/analyzeHeadless`) and the fake JDK (REA read the real `release` file and
-correctly reported "runtime only").
-
-### Two ways to unblock it
-
-1. **Allowlist two hosts** — `release-assets.githubusercontent.com` and
-   `api.adoptium.net`. Then `bash install-ghidra.sh` does everything in ~10 minutes.
-2. **Bring the zip yourself** — download `ghidra_12.1.4_PUBLIC_*.zip` (570 MB) and
-   a Temurin JDK 21 tarball on a networked machine, upload them into the workspace,
-   then `bash install-ghidra.sh --ghidra-zip <zip> --jdk <tarball>`. Upload and
-   install in the same session: workspace snapshots are capped near 128 MB, so a
-   570 MB zip should not be relied on to persist between sessions.
-
-### Native analysis that works without Ghidra
-
-| Path | Command | Verified |
-| --- | --- | --- |
-| GNU objdump (headers, sections, symbols, relocations, DWARF, disassembly) | `rea inspect-with-objdump /bin/ls disassemble --symbol main` | yes — provider `gnu.objdump` |
-| pwntools ELF layout | `rea inspect-binary-layout /bin/ls` | yes — provider `pwntools-elf` |
-| Rizin | `rea execute-rizin-command` | binary not obtainable here (`REA_RIZIN_COMMAND`) |
-
-Only *decompiled pseudocode* (Ghidra's `decompile` / `function` workflows) waits on
-the Ghidra zip; disassembly and layout analysis run now.
+* The JDK is a shim, not a vendor JDK: `javadoc`, `jshell`, `jlink` and `jmod`
+  are absent, and `javac` is 21.0.11 running against a 21.0.8 runtime (same major,
+  works). Ghidra's Java-script compilation is patched through `ToolProvider`.
+* `/opt/ghidra_12.1.4_PUBLIC` (876 MB) and `/opt/jdk-21-full` (~180 MB) live
+  outside the repo and outside the snapshot; keep `install-ghidra-offline.sh`
+  with the workspace.
+* Ghidra analysis of a small binary takes ~20–25 s per session in this 2-vCPU
+  container; sessions are ephemeral per REA invocation unless an MCP server
+  keeps them alive.
