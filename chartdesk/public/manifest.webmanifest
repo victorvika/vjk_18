@@ -1,0 +1,25 @@
+{
+  "name": "ChartDeck — XAUUSD terminal",
+  "short_name": "ChartDeck",
+  "description": "Offline gold (XAUUSD) charting terminal: candles, studies, watchlist and depth. Runs entirely on device.",
+  "id": "/chartdesk/",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#0b0e11",
+  "theme_color": "#0b0e11",
+  "categories": ["finance", "productivity", "utilities"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    { "name": "Open XAUUSD 1H", "short_name": "XAU 1H", "url": "./?tf=1h" }
+  ]
+}

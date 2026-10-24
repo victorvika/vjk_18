@@ -51,6 +51,27 @@ describe('ChartDeck shell', () => {
     expect(daily.getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('imports the bundled XAUUSD sample and shows the data is no longer synthetic', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    fireEvent.click(screen.getByRole('button', { name: /bundled 1-hour XAUUSD sample/i }));
+    expect(await screen.findByText(/Use this data/i)).toBeTruthy();
+    expect(screen.getByText('1,101')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Use this data/i }));
+    expect(await screen.findByRole('status')).toBeTruthy();
+    expect(screen.getAllByText(/imported · 1,101 bars/).length).toBeGreaterThan(0);
+  });
+
+  it('switches panes from the mobile tab bar', () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector('.app')!;
+    expect(shell.getAttribute('data-view')).toBe('chart');
+    fireEvent.click(screen.getByRole('button', { name: 'Depth' }));
+    expect(shell.getAttribute('data-view')).toBe('book');
+    fireEvent.click(screen.getByRole('button', { name: 'Symbols' }));
+    expect(shell.getAttribute('data-view')).toBe('list');
+  });
+
   it('opens the command palette with the keyboard and runs a command', () => {
     render(<App />);
     fireEvent.keyDown(window, { key: 'k', metaKey: true });

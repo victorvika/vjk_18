@@ -4,7 +4,15 @@ import { fmtCompact, fmtPct, fmtPrice } from '../lib/feed';
 
 type Summary = NonNullable<ReturnType<typeof summarize>>;
 
-export default function StatsBar({ inst, summary }: { inst: Instrument; summary: Summary | null }) {
+export default function StatsBar({
+  inst,
+  summary,
+  source,
+}: {
+  inst: Instrument;
+  summary: Summary | null;
+  source: string;
+}) {
   if (!summary) return null;
   const up = summary.changePct >= 0;
   return (
@@ -15,6 +23,7 @@ export default function StatsBar({ inst, summary }: { inst: Instrument; summary:
           <p>
             {inst.name} · {inst.exchange} · {inst.currency}
           </p>
+          <span className={`source-chip ${source.startsWith('imported') ? 'live' : ''}`}>{source}</span>
         </div>
         <div className={`stat-last ${up ? 'up' : 'down'}`}>
           <b>{fmtPrice(summary.last)}</b>
@@ -44,6 +53,12 @@ export default function StatsBar({ inst, summary }: { inst: Instrument; summary:
         <div>
           <dt>Bars</dt>
           <dd>{summary.barCount}</dd>
+        </div>
+        <div>
+          <dt>Range</dt>
+          <dd>
+            {summary.high > 0 ? (((summary.high - summary.low) / summary.high) * 100).toFixed(2) : '0.00'}%
+          </dd>
         </div>
       </dl>
     </section>

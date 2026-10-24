@@ -34,6 +34,7 @@ export const TIMEFRAMES: { id: Timeframe; label: string; minutes: number }[] = [
 ];
 
 export const INSTRUMENTS: Instrument[] = [
+  { symbol: 'XAUUSD', name: 'Gold Spot / US Dollar', exchange: 'OANDA', currency: 'USD', volatility: 0.0016, trend: 0.00008, basePrice: 4285.4, session: { openMinute: 0, closeMinute: 1440 } },
   { symbol: 'NIFTY 50', name: 'Nifty 50 Index', exchange: 'NSE', currency: 'INR', volatility: 0.0016, trend: 0.00012, basePrice: 24187.4, session: { openMinute: 555, closeMinute: 930 } },
   { symbol: 'BANKNIFTY', name: 'Nifty Bank Index', exchange: 'NSE', currency: 'INR', volatility: 0.0024, trend: 0.00009, basePrice: 52140.75, session: { openMinute: 555, closeMinute: 930 } },
   { symbol: 'RELIANCE', name: 'Reliance Industries', exchange: 'NSE', currency: 'INR', volatility: 0.0021, trend: 0.00005, basePrice: 2934.6, session: { openMinute: 555, closeMinute: 930 } },
@@ -42,7 +43,6 @@ export const INSTRUMENTS: Instrument[] = [
   { symbol: 'HDFCBANK', name: 'HDFC Bank Ltd', exchange: 'NSE', currency: 'INR', volatility: 0.002, trend: 0.00004, basePrice: 1690.15, session: { openMinute: 555, closeMinute: 930 } },
   { symbol: 'BTCUSDT', name: 'Bitcoin / Tether', exchange: 'BINANCE', currency: 'USDT', volatility: 0.0062, trend: 0.0002, basePrice: 67412.5, session: { openMinute: 0, closeMinute: 1440 } },
   { symbol: 'ETHUSDT', name: 'Ether / Tether', exchange: 'BINANCE', currency: 'USDT', volatility: 0.0075, trend: 0.00015, basePrice: 3287.9, session: { openMinute: 0, closeMinute: 1440 } },
-  { symbol: 'XAUUSD', name: 'Gold Spot / US Dollar', exchange: 'OANDA', currency: 'USD', volatility: 0.0011, trend: 0.00006, basePrice: 2412.8, session: { openMinute: 0, closeMinute: 1440 } },
   { symbol: 'EURUSD', name: 'Euro / US Dollar', exchange: 'OANDA', currency: 'USD', volatility: 0.0006, trend: -0.00001, basePrice: 1.0864, session: { openMinute: 0, closeMinute: 1440 } },
   { symbol: 'AAPL', name: 'Apple Inc', exchange: 'NASDAQ', currency: 'USD', volatility: 0.0018, trend: 0.00007, basePrice: 231.42, session: { openMinute: 810, closeMinute: 1200 } },
   { symbol: 'NVDA', name: 'NVIDIA Corp', exchange: 'NASDAQ', currency: 'USD', volatility: 0.0033, trend: 0.00018, basePrice: 138.07, session: { openMinute: 810, closeMinute: 1200 } },

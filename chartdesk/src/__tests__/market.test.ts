@@ -3,7 +3,8 @@ import { INSTRUMENTS, generateCandles, aggregate } from '../lib/market';
 import { bollinger, ema, macd, rsi, sma, vwap } from '../lib/studies';
 import { buildOrderBook, buildTape, summarize } from '../lib/feed';
 
-const inst = INSTRUMENTS[0];
+const inst = INSTRUMENTS.find((i) => i.symbol === 'XAUUSD')!;
+const weekdayInst = INSTRUMENTS.find((i) => i.symbol === 'RELIANCE')!;
 const bars = generateCandles(inst, '5m', 260);
 
 describe('market generator', () => {
@@ -24,12 +25,22 @@ describe('market generator', () => {
   });
 
   it('keeps bars inside the exchange session window', () => {
+    // gold trades around the clock, so only the length of the window is asserted
     for (const c of bars) {
       const d = new Date(c.time * 1000);
       const minutes = d.getUTCHours() * 60 + d.getUTCMinutes();
       expect(minutes).toBeGreaterThanOrEqual(inst.session.openMinute);
       expect(minutes).toBeLessThan(inst.session.closeMinute);
+    }
+  });
+
+  it('drops weekends for instruments that close', () => {
+    for (const c of generateCandles(weekdayInst, '15m', 200)) {
+      const d = new Date(c.time * 1000);
       expect([0, 6]).not.toContain(d.getUTCDay());
+      const minutes = d.getUTCHours() * 60 + d.getUTCMinutes();
+      expect(minutes).toBeGreaterThanOrEqual(weekdayInst.session.openMinute);
+      expect(minutes).toBeLessThan(weekdayInst.session.closeMinute);
     }
   });
 
