@@ -1,0 +1,120 @@
+package com.rideaccepter.app.ui.screens
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.rideaccepter.app.ui.DEFAULT_PLANS
+import com.rideaccepter.app.ui.MainViewModel
+import com.rideaccepter.app.ui.theme.DarkGreyCard
+import com.rideaccepter.app.ui.theme.NeonGreen
+import com.rideaccepter.app.ui.theme.NeonRed
+
+/** Plans — LOCAL DEMO activation. Production: own backend order→verify flow (docs/BACKEND_SPEC.md). */
+@Composable
+fun PlansScreen(vm: MainViewModel) {
+    val planName by vm.planName.collectAsState()
+    val seconds by vm.secondsRemaining.collectAsState()
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Text("PLANS", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(
+            if (seconds > 0) "Active: $planName • ${seconds / 3600}h ${(seconds % 3600) / 60}m left"
+            else "No active plan. Demo buttons activate instantly (no payment).",
+            color = if (seconds > 0) NeonGreen else Color.Gray,
+            modifier = Modifier.padding(vertical = 10.dp)
+        )
+        DEFAULT_PLANS.forEach { plan ->
+            Card(Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = DarkGreyCard), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(plan.title, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(plan.priceText, color = NeonRed, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { vm.activateDemoPlan(plan) },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonRed),
+                        shape = RoundedCornerShape(10.dp)) { Text("ACTIVATE (DEMO)") }
+                }
+            }
+        }
+    }
+}
+
+/** Login — local demo (stores user id). Production: own /auth/login (docs/BACKEND_SPEC.md). */
+@Composable
+fun LoginScreen(vm: MainViewModel) {
+    val userId by vm.userId.collectAsState()
+    var idInput by remember { mutableStateOf("") }
+    var passInput by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("LOGIN TO TERMINAL", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text("Enter your unique User ID and Password to unlock terminal access.",
+            color = Color.Gray, modifier = Modifier.padding(vertical = 10.dp))
+        if (userId.isNotBlank()) {
+            Text("Logged in as: $userId", color = NeonGreen, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = { vm.logout() }) { Text("LOGOUT") }
+        } else {
+            OutlinedTextField(idInput, { idInput = it }, label = { Text("User ID") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true)
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(passInput, { passInput = it }, label = { Text("Password") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true)
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = { vm.login(idInput) }, Modifier.fillMaxWidth().height(52.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = NeonRed),
+                shape = RoundedCornerShape(12.dp)) { Text("LOGIN", fontWeight = FontWeight.Bold) }
+            Text("Demo mode: any User ID works, password is not verified locally.",
+                color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+        }
+    }
+}
+
+@Composable
+fun ProfileScreen(vm: MainViewModel) {
+    val userId by vm.userId.collectAsState()
+    val planName by vm.planName.collectAsState()
+    val expiry by vm.expiryFormatted.collectAsState()
+    val total by vm.totalEarnings.collectAsState()
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("PROFILE", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(16.dp))
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = DarkGreyCard),
+            shape = RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(18.dp)) {
+                Text("User ID: ${userId.ifBlank { "—" }}")
+                Text("Plan: ${planName.ifBlank { "—" }}")
+                Text("Expires: $expiry")
+                Text("Lifetime auto-accepted earnings: ₹${total.toInt()}", color = NeonGreen)
+                Text("App version: 0.1.0 (clean-room rebuild)", color = Color.Gray)
+            }
+        }
+        Text(
+            "Safety: this build has NO developer-options hiding or detection evasion. " +
+                "Using automation in third-party driver apps can violate their terms and risk the driver account.",
+            color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp)
+        )
+    }
+}
