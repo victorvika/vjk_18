@@ -38,6 +38,4 @@ object StatusChecks {
         context.packageManager.getPackageInfo(pkg, 0); true
     } catch (e: PackageManager.NameNotFoundException) { false }
 
-    /** Plan gate used by Dashboard + Overlay periodic check. */
-    fun planActive(prefs: AppPreferences): Boolean = prefs.isPlanActive
 }

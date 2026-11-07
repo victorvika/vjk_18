@@ -77,19 +77,10 @@ fun StatusRow(label: String, value: String, ok: Boolean) {
 @Composable
 fun DashboardScreen(vm: MainViewModel) {
     val ctx = LocalContext.current
-    val seconds by vm.secondsRemaining.collectAsState()
-    val expiry by vm.expiryFormatted.collectAsState()
-    val planName by vm.planName.collectAsState()
-    val userId by vm.userId.collectAsState()
     val running by vm.engineRunning.collectAsState()
     val decision by vm.lastDecision.collectAsState()
     val selectedPkg by vm.selectedPackage.collectAsState()
 
-    fun fmt(total: Long): List<String> {
-        val d = total / 86400; val h = (total % 86400) / 3600; val m = (total % 3600) / 60; val s = total % 60
-        return listOf("%02d".format(d), "%02d".format(h), "%02d".format(m), "%02d".format(s))
-    }
-    val t = fmt(seconds)
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)
@@ -108,32 +99,18 @@ fun DashboardScreen(vm: MainViewModel) {
             }
         }
 
-        // Plan card
+        // Free build card — no subscription, no expiry
         Card(
             Modifier.fillMaxWidth().padding(top = 14.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF0D1F1A)),
             border = BorderStroke(1.5.dp, NeonGreen), shape = RoundedCornerShape(20.dp)
         ) {
             Column(Modifier.padding(18.dp)) {
-                Text("⏻  PLAN ACTIVE — TIME REMAINING", color = NeonGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    listOf("DAYS", "HOURS", "MINS", "SECS").forEachIndexed { i, label ->
-                        Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
-                            Text(t[i], fontSize = 34.sp, fontWeight = FontWeight.Bold)
-                            Text(label, color = Color.Gray, fontSize = 11.sp)
-                        }
-                        if (i < 3) Text(":", fontSize = 30.sp, color = Color.Gray)
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Expires on", color = Color.Gray); Text(expiry)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("User ID / Plan", color = Color.Gray)
-                    Text("${userId.ifBlank { "—" }} (${planName.ifBlank { "no plan" }})", color = NeonRed)
-                }
+                Text("✓  FREE BUILD — NO SUBSCRIPTION", color = NeonGreen, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text("No plan, no expiry, no payment. Engine runs whenever you press START OVERLAY.",
+                    color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("Status: " + (if (running) decision else "IDLE"),
+                    color = if (running) NeonGreen else Color.Gray, modifier = Modifier.padding(top = 6.dp))
             }
         }
 

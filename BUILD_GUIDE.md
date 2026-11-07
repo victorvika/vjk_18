@@ -19,9 +19,8 @@
 
 ## 4. Main App Test (Full Loop)
 1. Run configuration **app** → ▶ Run ("RideAccepter" install aagum)
-2. App open: **Plans** tab → `1 Day Plan` → **ACTIVATE (DEMO)** (plan illana engine lock — original madhiri)
-3. **Login** tab → edhachu User ID type panni LOGIN
-4. **Dashboard**: 
+2. **FREE build — subscription/plans kedayadhu.** Direct Dashboard-ku ponga.
+3. **Dashboard**: 
    - `Open Accessibility Settings` → **RideAccepter Engine** ON panni allow
    - `Grant Overlay Permission` → Allow
    - Target dropdown → **Mock Ride Simulator** select
@@ -41,8 +40,8 @@ kotlinc core/src/main/kotlin core/src/test/kotlin -include-runtime -d verify.jar
 ## 6. Ippo Demo Mode-la Irupadhu (Production-ku Maathanum)
 | Vishayam | Ippo | Production |
 |----------|------|------------|
-| Plan payment | Plans tab-la instant DEMO activate | Own backend: order → UPI/Razorpay → verify (`docs/BACKEND_SPEC.md`) |
-| Login | Any ID accept (local) | Own `/auth/login` API |
+| Subscription | ❌ Remove panniyachu — free build, plan/expiry kedayadhu | Thevai illa |
+| Login | Any ID accept (local) | Own `/auth/login` API (optional) |
 | Target apps | Simulator + 5 real apps registry-la iruku | Real app-la test = **unga responsibility** (account ban risk, Profile tab warning paarunga) |
 | Shizuku | Installed check mattum | Multi-app simultaneous tap (Phase 2) |
 

@@ -27,40 +27,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.rideaccepter.app.ui.DEFAULT_PLANS
 import com.rideaccepter.app.ui.MainViewModel
 import com.rideaccepter.app.ui.theme.DarkGreyCard
 import com.rideaccepter.app.ui.theme.NeonGreen
 import com.rideaccepter.app.ui.theme.NeonRed
 
-/** Plans — LOCAL DEMO activation. Production: own backend order→verify flow (docs/BACKEND_SPEC.md). */
-@Composable
-fun PlansScreen(vm: MainViewModel) {
-    val planName by vm.planName.collectAsState()
-    val seconds by vm.secondsRemaining.collectAsState()
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("PLANS", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text(
-            if (seconds > 0) "Active: $planName • ${seconds / 3600}h ${(seconds % 3600) / 60}m left"
-            else "No active plan. Demo buttons activate instantly (no payment).",
-            color = if (seconds > 0) NeonGreen else Color.Gray,
-            modifier = Modifier.padding(vertical = 10.dp)
-        )
-        DEFAULT_PLANS.forEach { plan ->
-            Card(Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                colors = CardDefaults.cardColors(containerColor = DarkGreyCard), shape = RoundedCornerShape(16.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(plan.title, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                    Text(plan.priceText, color = NeonRed, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { vm.activateDemoPlan(plan) },
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonRed),
-                        shape = RoundedCornerShape(10.dp)) { Text("ACTIVATE (DEMO)") }
-                }
-            }
-        }
-    }
-}
 
 /** Login — local demo (stores user id). Production: own /auth/login (docs/BACKEND_SPEC.md). */
 @Composable
@@ -95,8 +66,6 @@ fun LoginScreen(vm: MainViewModel) {
 @Composable
 fun ProfileScreen(vm: MainViewModel) {
     val userId by vm.userId.collectAsState()
-    val planName by vm.planName.collectAsState()
-    val expiry by vm.expiryFormatted.collectAsState()
     val total by vm.totalEarnings.collectAsState()
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("PROFILE", fontSize = 28.sp, fontWeight = FontWeight.Bold)
@@ -105,8 +74,7 @@ fun ProfileScreen(vm: MainViewModel) {
             shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.padding(18.dp)) {
                 Text("User ID: ${userId.ifBlank { "—" }}")
-                Text("Plan: ${planName.ifBlank { "—" }}")
-                Text("Expires: $expiry")
+                Text("Subscription: None — free build, no plan needed", color = NeonGreen)
                 Text("Lifetime auto-accepted earnings: ₹${total.toInt()}", color = NeonGreen)
                 Text("App version: 0.1.0 (clean-room rebuild)", color = Color.Gray)
             }

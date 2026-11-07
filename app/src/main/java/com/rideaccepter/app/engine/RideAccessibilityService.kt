@@ -25,7 +25,7 @@ import java.util.Locale
 /**
  * Core engine (clean-room, see docs/ENGINE_SPEC.md).
  * Flow: event → debounced scan → parse → filter rules → accept action → history + TTS.
- * Runs ONLY while the user has pressed START (engineEnabled) and a plan is active.
+ * Runs ONLY while the user has pressed START (engineEnabled). No subscription/plan gate.
  */
 class RideAccessibilityService : AccessibilityService() {
 
@@ -54,7 +54,7 @@ class RideAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || !::prefs.isInitialized) return
-        if (!prefs.engineEnabled || !prefs.isPlanActive) return
+        if (!prefs.engineEnabled) return
         val pkg = event.packageName?.toString() ?: return
         if (AppTargets.findByPackage(pkg) == null) return
         // Debounce: collapse event bursts into one scan (original: SCAN_DEBOUNCE_MS)

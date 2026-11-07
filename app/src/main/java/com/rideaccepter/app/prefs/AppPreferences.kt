@@ -18,14 +18,6 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_TOKEN, null)
         set(v) = prefs.edit().putString(KEY_TOKEN, v).apply()
 
-    var planName: String?
-        get() = prefs.getString(KEY_PLAN_NAME, null)
-        set(v) = prefs.edit().putString(KEY_PLAN_NAME, v).apply()
-
-    var planExpiresTs: Long
-        get() = prefs.getLong(KEY_PLAN_EXPIRES, 0L)
-        set(v) = prefs.edit().putLong(KEY_PLAN_EXPIRES, v).apply()
-
     var selectedPackage: String
         get() = prefs.getString(KEY_SELECTED_PACKAGE, "com.rideaccepter.simulator") ?: "com.rideaccepter.simulator"
         set(v) = prefs.edit().putString(KEY_SELECTED_PACKAGE, v).apply()
@@ -46,8 +38,6 @@ class AppPreferences(context: Context) {
         get() = prefs.getInt(KEY_COOLDOWN, 5)
         set(v) = prefs.edit().putInt(KEY_COOLDOWN, v).apply()
 
-    val isPlanActive: Boolean get() = planExpiresTs > System.currentTimeMillis()
-    val secondsRemaining: Long get() = maxOf(0L, (planExpiresTs - System.currentTimeMillis()) / 1000)
 
     fun loadFilters(): FilterConfig = FilterConfig(
         fareEnabled = prefs.getBoolean(K_FARE_ON, true),
@@ -81,8 +71,6 @@ class AppPreferences(context: Context) {
     companion object {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_TOKEN = "auth_token"
-        private const val KEY_PLAN_NAME = "plan_name"
-        private const val KEY_PLAN_EXPIRES = "plan_expires_ts"
         private const val KEY_SELECTED_PACKAGE = "selected_package"
         private const val KEY_ENABLED = "engine_enabled"
         private const val KEY_TTS = "tts_enabled"

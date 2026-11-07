@@ -10,7 +10,6 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -30,7 +29,6 @@ import com.rideaccepter.app.ui.screens.DashboardScreen
 import com.rideaccepter.app.ui.screens.FiltersScreen
 import com.rideaccepter.app.ui.screens.HistoryScreen
 import com.rideaccepter.app.ui.screens.LoginScreen
-import com.rideaccepter.app.ui.screens.PlansScreen
 import com.rideaccepter.app.ui.screens.ProfileScreen
 import com.rideaccepter.app.ui.theme.NeonRed
 import com.rideaccepter.app.ui.theme.RideAccepterTheme
@@ -48,7 +46,6 @@ class MainActivity : ComponentActivity() {
 fun MainRoot(vm: MainViewModel = viewModel()) {
     val tab by vm.currentTab.collectAsState()
     val icons = mapOf(
-        AppTab.Plans to Icons.Filled.ShoppingBag,
         AppTab.Login to Icons.AutoMirrored.Filled.Login,
         AppTab.Dashboard to Icons.Filled.Dashboard,
         AppTab.Filter to Icons.Filled.FilterList,
@@ -78,7 +75,6 @@ fun MainRoot(vm: MainViewModel = viewModel()) {
     ) { padding ->
         androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
             when (tab) {
-                AppTab.Plans -> PlansScreen(vm)
                 AppTab.Login -> LoginScreen(vm)
                 AppTab.Dashboard -> DashboardScreen(vm)
                 AppTab.Filter -> FiltersScreen(vm)
