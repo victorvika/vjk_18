@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-enum class AppTab(val label: String) { Login("Login"), Dashboard("Dashboard"), Filter("Filter"), History("History"), Profile("Profile") }
+enum class AppTab(val label: String) { Dashboard("Dashboard"), Filter("Filter"), History("History"), Profile("Profile") }
 
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -28,7 +28,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val currentTab = MutableStateFlow(AppTab.Dashboard)
     val filters = MutableStateFlow(prefs.loadFilters())
     val selectedPackage = MutableStateFlow(prefs.selectedPackage)
-    val userId = MutableStateFlow(prefs.userId ?: "")
 
     val history: StateFlow<List<RideHistoryEntity>> =
         repo.allRides.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -45,12 +44,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cd = (cooldown.toIntOrNull() ?: timing.value.cooldownSeconds).coerceIn(0, 120)
         prefs.scanDebounceMs = s; prefs.reactionDelayMs = r; prefs.tapDurationMs = tp; prefs.cooldownSeconds = cd
         timing.value = TimingSettings(s, r, tp, cd)
-        EngineState.lastDecision.value = "Timing saved: scan ${s}ms • tap in ${r}ms"
+        EngineState.logDecision("Timing saved: scan ${s}ms • tap in ${r}ms")
     }
 
     val engineRunning: StateFlow<Boolean> = EngineState.running
     val overlayRunning: StateFlow<Boolean> = EngineState.overlayRunning
     val lastDecision: StateFlow<String> = EngineState.lastDecision
+    val engineLog: StateFlow<List<String>> = EngineState.log
 
     init {
         EngineState.setRunning(prefs.engineEnabled)
@@ -98,7 +98,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         prefs.engineEnabled = true
         EngineState.setRunning(true)
-        EngineState.lastDecision.value = "ACTIVE SCANNING"
+        EngineState.logDecision("ACTIVE SCANNING")
         val intent = Intent(ctx, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(intent) else ctx.startService(intent)
     }
@@ -107,20 +107,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         prefs.engineEnabled = false
         EngineState.setRunning(false)
-        EngineState.lastDecision.value = "IDLE"
+        EngineState.logDecision("IDLE")
         ctx.stopService(Intent(ctx, OverlayService::class.java))
-    }
-
-    // ---- auth (LOCAL DEMO — replace with own backend, docs/BACKEND_SPEC.md) ----
-    fun login(id: String) {
-        if (id.isBlank()) return
-        prefs.userId = id.trim()
-        userId.value = id.trim()
-    }
-
-    fun logout() {
-        prefs.clearSession()
-        userId.value = ""
     }
 
     fun clearHistory() {

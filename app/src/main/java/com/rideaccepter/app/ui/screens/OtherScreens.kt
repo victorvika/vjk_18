@@ -33,39 +33,9 @@ import com.rideaccepter.app.ui.theme.NeonGreen
 import com.rideaccepter.app.ui.theme.NeonRed
 
 
-/** Login — local demo (stores user id). Production: own /auth/login (docs/BACKEND_SPEC.md). */
-@Composable
-fun LoginScreen(vm: MainViewModel) {
-    val userId by vm.userId.collectAsState()
-    var idInput by remember { mutableStateOf("") }
-    var passInput by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("LOGIN TO TERMINAL", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Text("Enter your unique User ID and Password to unlock terminal access.",
-            color = Color.Gray, modifier = Modifier.padding(vertical = 10.dp))
-        if (userId.isNotBlank()) {
-            Text("Logged in as: $userId", color = NeonGreen, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(onClick = { vm.logout() }) { Text("LOGOUT") }
-        } else {
-            OutlinedTextField(idInput, { idInput = it }, label = { Text("User ID") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true)
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(passInput, { passInput = it }, label = { Text("Password") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true)
-            Spacer(Modifier.height(16.dp))
-            Button(onClick = { vm.login(idInput) }, Modifier.fillMaxWidth().height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = NeonRed),
-                shape = RoundedCornerShape(12.dp)) { Text("LOGIN", fontWeight = FontWeight.Bold) }
-            Text("Demo mode: any User ID works, password is not verified locally.",
-                color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
-        }
-    }
-}
 
 @Composable
 fun ProfileScreen(vm: MainViewModel) {
-    val userId by vm.userId.collectAsState()
     val total by vm.totalEarnings.collectAsState()
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("PROFILE", fontSize = 28.sp, fontWeight = FontWeight.Bold)
@@ -73,10 +43,9 @@ fun ProfileScreen(vm: MainViewModel) {
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = DarkGreyCard),
             shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.padding(18.dp)) {
-                Text("User ID: ${userId.ifBlank { "—" }}")
                 Text("Subscription: None — free build, no plan needed", color = NeonGreen)
                 Text("Lifetime auto-accepted earnings: ₹${total.toInt()}", color = NeonGreen)
-                Text("App version: 0.2.0 (clean-room rebuild)", color = Color.Gray)
+                Text("App version: 0.3.0 (clean-room rebuild)", color = Color.Gray)
             }
         }
         Text(

@@ -57,6 +57,12 @@ fun HistoryScreen(vm: MainViewModel) {
                     Text("TOTAL EARNINGS", color = NeonRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("₹${total.toInt()}", fontSize = 36.sp, fontWeight = FontWeight.Bold)
                     Text("${history.size} rides auto-accepted", color = Color.Gray)
+                    val todayStart = java.util.Calendar.getInstance().apply {
+                        set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+                        set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+                    }.timeInMillis
+                    val todayRides = history.filter { it.timestamp >= todayStart }
+                    Text("Today: ₹${todayRides.sumOf { it.fare }.toInt()} (${todayRides.size} rides)", color = NeonGreen, fontSize = 13.sp)
                 }
                 IconButton(onClick = { confirmClear = true }) {
                     Icon(Icons.Filled.Delete, "Clear history", tint = NeonRed)

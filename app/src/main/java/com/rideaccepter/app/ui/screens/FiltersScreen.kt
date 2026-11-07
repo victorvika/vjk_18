@@ -20,6 +20,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -84,6 +85,13 @@ fun FiltersScreen(vm: MainViewModel) {
                     label = { Text("Min Fare (₹)") }, modifier = Modifier.weight(1f), singleLine = true)
                 OutlinedTextField(maxFare, { maxFare = it.filter { c -> c.isDigit() } },
                     label = { Text("Max Fare (₹)") }, modifier = Modifier.weight(1f), singleLine = true)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("60" to "300", "100" to "500", "60" to "1000", "150" to "999").forEach { (lo, hi) ->
+                    OutlinedButton(onClick = { minFare = lo; maxFare = hi; vm.saveFareRange(lo, hi) }) {
+                        Text("₹$lo–$hi", fontSize = 12.sp)
+                    }
+                }
             }
             Button(onClick = { vm.saveFareRange(minFare, maxFare) },
                 Modifier.fillMaxWidth().padding(top = 14.dp).height(50.dp),

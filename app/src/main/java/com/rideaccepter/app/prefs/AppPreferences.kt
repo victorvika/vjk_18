@@ -10,14 +10,6 @@ class AppPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("auto_accept_config", Context.MODE_PRIVATE)
 
-    var userId: String?
-        get() = prefs.getString(KEY_USER_ID, null)
-        set(v) = prefs.edit().putString(KEY_USER_ID, v).apply()
-
-    var authToken: String?
-        get() = prefs.getString(KEY_TOKEN, null)
-        set(v) = prefs.edit().putString(KEY_TOKEN, v).apply()
-
     var selectedPackage: String
         get() = prefs.getString(KEY_SELECTED_PACKAGE, "com.rideaccepter.simulator") ?: "com.rideaccepter.simulator"
         set(v) = prefs.edit().putString(KEY_SELECTED_PACKAGE, v).apply()
@@ -81,11 +73,8 @@ class AppPreferences(context: Context) {
         List(arr.length()) { arr.optString(it) }.filter { it.isNotBlank() }
     } catch (e: Exception) { emptyList() }
 
-    fun clearSession() = prefs.edit().remove(KEY_USER_ID).remove(KEY_TOKEN).apply()
 
     companion object {
-        private const val KEY_USER_ID = "user_id"
-        private const val KEY_TOKEN = "auth_token"
         private const val KEY_SELECTED_PACKAGE = "selected_package"
         private const val KEY_ENABLED = "engine_enabled"
         private const val KEY_TTS = "tts_enabled"

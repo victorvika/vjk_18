@@ -73,12 +73,12 @@ class RideAccessibilityService : AccessibilityService() {
             val ride = RideTextParser.parse(texts, target)
 
             when (val decision = FilterRuleEngine.evaluate(ride, prefs.loadFilters())) {
-                is FilterDecision.Ignore -> EngineState.lastDecision.value = "IGNORED: ${decision.reason}"
+                is FilterDecision.Ignore -> EngineState.logDecision("IGNORED: ${decision.reason}")
                 FilterDecision.Accept -> {
                     val delay = prefs.reactionDelayMs.coerceIn(0, 5000)
                     if (delay <= 0) performAccept(root, target.packageName, ride)
                     else {
-                        EngineState.lastDecision.value = "MATCHED ₹${ride.fareAmount?.toInt() ?: 0} — tapping in ${delay}ms"
+                        EngineState.logDecision("MATCHED ₹${ride.fareAmount?.toInt() ?: 0} — tapping in ${delay}ms")
                         handler.postDelayed({ performAccept(root, target.packageName, ride) }, delay)
                     }
                 }
@@ -106,8 +106,16 @@ class RideAccessibilityService : AccessibilityService() {
         }
         if (clicked) {
             lastAcceptTime = now
-            EngineState.lastDecision.value = "ACCEPTED ₹${ride.fareAmount?.toInt() ?: 0} • ${target.name}"
+            EngineState.logDecision("ACCEPTED ₹${ride.fareAmount?.toInt() ?: 0} • ${target.name}")
             saveRideToHistory(ride.appName, ride.fareAmount ?: 0.0, ride.fareText, ride.pickupKm, ride.tripKm, ride.pickupText, ride.dropoffText)
+            try {
+                val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    (getSystemService(VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION") getSystemService(VIBRATOR_SERVICE) as android.os.Vibrator
+                }
+                vibrator.vibrate(android.os.VibrationEffect.createOneShot(250, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            } catch (e: Exception) { /* vibration optional */ }
             if (prefs.ttsEnabled) speak("Ride accepted. Fare ${ride.fareAmount?.toInt() ?: 0} rupees")
         }
     }

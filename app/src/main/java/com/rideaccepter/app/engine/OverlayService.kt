@@ -66,6 +66,8 @@ class OverlayService : Service() {
             setTextColor(Color.parseColor("#9BE29B")); textSize = 11f; setPadding(dp(10), dp(4), dp(10), dp(2))
         }
 
+        statusViewRef = status
+        refreshHandler.post(refreshRunnable)
         overlayView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -134,7 +136,18 @@ class OverlayService : Service() {
         }
     }
 
+    private val refreshHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var statusViewRef: TextView? = null
+    private val refreshRunnable = object : Runnable {
+        override fun run() {
+            statusViewRef?.text = if (prefs.engineEnabled) EngineState.lastDecision.value
+                else statusViewRef?.text
+            refreshHandler.postDelayed(this, 1000)
+        }
+    }
+
     override fun onDestroy() {
+        refreshHandler.removeCallbacks(refreshRunnable)
         overlayView?.let { windowManager?.removeView(it) }
         EngineState.overlayRunning.value = false
         super.onDestroy()

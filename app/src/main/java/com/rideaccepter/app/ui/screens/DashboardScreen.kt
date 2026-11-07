@@ -146,6 +146,18 @@ fun DashboardScreen(vm: MainViewModel) {
                 }, Modifier.fillMaxWidth()) { Text("Open Developer Options (Manual)") }
                 Text("Automatic hide (Shizuku shell commands) indha build-la kedayadhu — thevai na inga irundhu neengale off pannikalam.",
                     color = Color.Gray, fontSize = 11.sp)
+                val batteryOff = StatusChecks.isBatteryOptimizationOff(ctx)
+                StatusRow("Battery Optimization", if (batteryOff) "UNRESTRICTED" else "RESTRICTED (engine kill aagalam)", batteryOff)
+                if (!batteryOff) {
+                    OutlinedButton(onClick = {
+                        try {
+                            ctx.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:${ctx.packageName}")))
+                        } catch (e: Exception) {
+                            ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    }, Modifier.fillMaxWidth()) { Text("Allow Unrestricted Battery") }
+                }
             }
         }
 
@@ -211,6 +223,15 @@ fun DashboardScreen(vm: MainViewModel) {
                     Modifier.fillMaxWidth().padding(top = 12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = NeonRed),
                     shape = RoundedCornerShape(12.dp)) { Text("SAVE TIMING", fontWeight = FontWeight.Bold) }
+            }
+        }
+        SectionTitle("ENGINE LOG (LIVE)")
+        val logs by vm.engineLog.collectAsState()
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = DarkGreyCard),
+            shape = RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(14.dp)) {
+                if (logs.isEmpty()) Text("No events yet — START OVERLAY pottu ride varumbodhu inga theriyum.", color = Color.Gray, fontSize = 12.sp)
+                logs.forEach { line -> Text(line, fontSize = 12.sp, color = if (line.contains("ACCEPTED")) NeonGreen else Color(0xFFD6D6DE), modifier = Modifier.padding(vertical = 2.dp)) }
             }
         }
         Spacer(Modifier.height(24.dp))

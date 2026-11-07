@@ -41,7 +41,6 @@ kotlinc core/src/main/kotlin core/src/test/kotlin -include-runtime -d verify.jar
 | Vishayam | Ippo | Production |
 |----------|------|------------|
 | Subscription | ❌ Remove panniyachu — free build, plan/expiry kedayadhu | Thevai illa |
-| Login | Any ID accept (local) | Own `/auth/login` API (optional) |
 | Target apps | Simulator + 5 real apps registry-la iruku | Real app-la test = **unga responsibility** (account ban risk, Profile tab warning paarunga) |
 | Shizuku | Installed check mattum | Multi-app simultaneous tap (Phase 2) |
 

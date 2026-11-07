@@ -13,6 +13,16 @@ object EngineState {
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running
     val lastDecision = MutableStateFlow("IDLE")
+    val log = MutableStateFlow<List<String>>(emptyList())
+
+    /** Sets decision + appends to visible log only when it changes (no spam). */
+    fun logDecision(text: String) {
+        if (lastDecision.value == text) return
+        lastDecision.value = text
+        val time = java.text.SimpleDateFormat("hh:mm:ss a", java.util.Locale.ENGLISH)
+            .format(java.util.Date())
+        log.value = (listOf("$time  $text") + log.value).take(20)
+    }
     val overlayRunning = MutableStateFlow(false)
 
     fun setRunning(v: Boolean) { _running.value = v }
@@ -37,6 +47,11 @@ object StatusChecks {
     /** Read-only status. Manual toggle is via system Settings (see Dashboard button). */
     fun isDeveloperOptionsOn(context: Context): Boolean = try {
         Settings.Global.getInt(context.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+    } catch (e: Exception) { false }
+
+    fun isBatteryOptimizationOff(context: Context): Boolean = try {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        pm.isIgnoringBatteryOptimizations(context.packageName)
     } catch (e: Exception) { false }
 
     fun isTargetInstalled(context: Context, pkg: String): Boolean = try {
