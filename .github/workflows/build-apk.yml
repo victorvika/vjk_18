@@ -1,0 +1,74 @@
+name: Build Ready-to-Use APK (Free, No Subscription)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [arena/affce881-vjk-18]
+    paths:
+      - "app/**"
+      - "core/**"
+      - "simulator/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Install Android SDK 35
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build APKs (debug-signed = install-ready)
+        run: gradle :app:assembleDebug :simulator:assembleDebug --stacktrace
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/RideAccepter-Free.apk
+          cp simulator/build/outputs/apk/debug/simulator-debug.apk release/MockRideSimulator.apk
+          ls -lh release/
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideAccepter-Free-APKs
+          path: release/*.apk
+          retention-days: 30
+
+      - name: Publish GitHub Release (direct download links)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: free-v0.2.${{ github.run_number }}
+          name: "RideAccepter Free v0.2.${{ github.run_number }} (No Subscription, MS Timing)"
+          body: |
+            Ready-to-use APKs — FREE build, no subscription, no plan, no expiry.
+
+            **Install:**
+            1. Download `RideAccepter-Free.apk` below → install (allow "Install via USB / unknown apps" if asked).
+            2. Optional test app: `MockRideSimulator.apk`.
+            3. Open RideAccepter → Accessibility Settings → enable "RideAccepter Engine" → Grant Overlay → START OVERLAY.
+            4. Test first with the Mock Simulator (₹100 ride accepts, ₹40 ignores with default ₹60–1000 filter).
+            5. NEW: Dashboard → SPEED / TIMING (MILLISECONDS) — scan delay, tap delay, tap press, cooldown custom enter panni SAVE TIMING.
+
+            Note: debug-signed build for direct sideloading. Using automation inside third-party driver apps may violate their terms — test responsibly.
+          files: release/*.apk

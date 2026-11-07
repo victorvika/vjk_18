@@ -1,0 +1,22 @@
+# Original / decompiled artifacts — NEVER commit third-party APKs or sources
+analysis/original/*.apk
+analysis/decompiled/
+*.apk
+*.aab
+
+# Android build
+app/build/
+*/build/
+.gradle/
+local.properties
+*.keystore
+*.jks
+
+# Reports may contain redacted findings only
+analysis/reports/*.json
+!analysis/reports/.gitkeep
+.gradle/
+build/
+local.properties
+*.iml
+.idea/

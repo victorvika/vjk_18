@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RideAccepter</string>
+    <string name="accessibility_label">RideAccepter Engine</string>
+    <string name="accessibility_desc">Watches for ride offers in your selected driver app, checks your fare and zone filters, and alerts or accepts matching rides.</string>
+</resources>
