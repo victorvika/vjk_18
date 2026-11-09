@@ -1,0 +1,798 @@
+//@version=5
+indicator("Liquidity Sweep + Market Structure Engine v3 FX", shorttitle = "LSMS v3 FX", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 200)
+
+// ============================================================================
+// LSMS - Liquidity Sweep + Market Structure Engine
+// Flow: trend/range -> liquidity map -> liquidity grab -> MSS (close beyond swing)
+//       -> FVG entry -> nearest liquidity pool as target
+// v3 FX (EURUSD / GBPUSD): NY-time Asia range, NY 17:00 forex day (own PDH/PDL, no
+//        provider daily candle), spread + pip-aware SL/RR, HTF bias, FVG required,
+//        simulated outcome tracker (auto loss guard + optional learned bucket gate).
+// All events are evaluated on confirmed bars only (no repainting).
+// ============================================================================
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+gS = "Market Structure"
+pivLen  = input.int(2, "Pivot length (2 = five-candle pivot)", minval = 1, maxval = 20, group = gS)
+showStr = input.bool(true, "Show BOS / MSS", group = gS)
+sigMode = input.string("MSS only", "Setup trigger", options = ["MSS only", "MSS + BOS"], group = gS)
+showPB  = input.bool(false, "Mark candle-based pullbacks", group = gS)
+
+gL = "Liquidity"
+showSw   = input.bool(true, "Swing highs / lows (BSL / SSL)", group = gL)
+useRsi   = input.bool(true, "Thicker line on overbought / oversold turning points", group = gL)
+eqTol    = input.float(0.25, "EQH / EQL tolerance (x ATR)", minval = 0.01, step = 0.01, group = gL)
+showDay  = input.bool(true, "Previous day high / low", group = gL)
+showAsia = input.bool(true, "Asian session high / low", group = gL)
+asiaSess = input.session("2000-0000", "Asian range (NY 8pm-midnight)", group = gL)
+ldnSess  = input.session("0200-0500", "London session (label only)", group = gL)
+tzIn     = input.string("America/New_York", "Session timezone", options = ["UTC", "America/New_York", "Europe/London", "Asia/Kolkata", "Asia/Tokyo"], group = gL)
+retBars  = input.int(2, "Close-beyond, then back inside (bars)", minval = 0, maxval = 10, group = gL)
+maxLvls  = input.int(15, "Max active levels", minval = 4, maxval = 60, group = gL)
+showGrab = input.bool(true, "Show liquidity grabs", group = gL)
+
+gT = "A+ Setup (Sweep > MSS > FVG)"
+showSetup = input.bool(true, "Draw Entry / SL / TP for latest setup", group = gT)
+setupBars = input.int(15, "Max bars from sweep to MSS", minval = 2, maxval = 100, group = gT)
+slBuf     = input.float(0.10, "SL buffer (x ATR)", minval = 0.0, step = 0.05, group = gT)
+rrTarget  = input.float(3.0, "TP2 risk : reward", minval = 1.0, step = 0.5, group = gT)
+fvgMin    = input.float(0.10, "Min FVG size (x ATR)", minval = 0.0, step = 0.05, group = gT)
+
+gF = "Filters (v2)"
+useKZ     = input.bool(true, "Only signal inside kill zones", group = gF)
+kzTz      = input.string("America/New_York", "Kill zone timezone", options = ["America/New_York", "UTC", "Europe/London", "Asia/Kolkata", "Asia/Tokyo"], group = gF)
+kz1       = input.session("0200-0500", "Kill zone 1 (London)", group = gF)
+kz2       = input.session("0700-1000", "Kill zone 2 (New York)", group = gF)
+qualOnly  = input.bool(true, "Setups only from key levels (PDH/PDL, Asia, EQH/EQL, OB/OS swings)", group = gF)
+minDisp   = input.float(0.8, "Min MSS candle body (x ATR, 0 = off)", minval = 0.0, step = 0.1, group = gF)
+minRR     = input.float(2.5, "Min RR to nearest liquidity target (0 = off)", minval = 0.0, step = 0.5, group = gF)
+maxPerDay = input.int(2, "Max signals per day", minval = 1, maxval = 10, group = gF)
+reqFvg    = input.bool(true, "Require an FVG after the sweep (displacement proof)", group = gF)
+useBias   = input.bool(true, "Trade only with HTF bias (HTF close vs EMA)", group = gF)
+biasTf    = input.timeframe("240", "HTF bias timeframe", group = gF)
+biasLen   = input.int(50, "HTF bias EMA length", minval = 5, group = gF)
+
+gC = "FX costs & stops"
+spreadPips = input.float(1.0, "Spread + slippage (pips)", minval = 0.0, step = 0.1, group = gC)
+slPad      = input.float(1.0, "Min SL buffer beyond sweep (pips)", minval = 0.0, step = 0.5, group = gC)
+minRiskPips = input.float(4.0, "Min SL distance (pips)", minval = 0.0, step = 0.5, group = gC)
+maxRiskPips = input.float(25.0, "Max SL distance (pips)", minval = 1.0, step = 1.0, group = gC)
+pipOvr     = input.float(0.0, "Pip size override (0 = auto)", minval = 0.0, step = 0.0001, group = gC)
+
+gR = "Risk panel"
+acctSize   = input.float(10000.0, "Account size", minval = 100.0, group = gR)
+riskPct    = input.float(0.5, "Risk per trade (%)", minval = 0.05, step = 0.05, group = gR)
+contract   = input.float(100000.0, "Contract size per 1.00 lot (FX = 100000, USD-quote pairs)", minval = 0.01, group = gR)
+dailyLim   = input.float(5.0, "Daily loss limit (%)", minval = 0.5, step = 0.5, group = gR)
+maxLim     = input.float(10.0, "Max loss limit (%)", minval = 1.0, step = 0.5, group = gR)
+todayLoss  = input.float(0.0, "Loss so far today (%) - update manually", minval = 0.0, step = 0.1, group = gR)
+totalLoss  = input.float(0.0, "Total loss so far (% of initial) - update manually", minval = 0.0, step = 0.1, group = gR)
+lossToday  = input.int(0, "Losing trades today - update manually", minval = 0, group = gR)
+maxLossDay = input.int(2, "Stop after this many losing trades in a day", minval = 1, group = gR)
+riskLock   = input.bool(true, "Block signals when guard says STOP", group = gR)
+autoGuard  = input.bool(true, "Guard also uses simulated losses today (auto)", group = gR)
+
+gA = "Learning (simulated outcomes)"
+showStats = input.bool(true, "Show simulated stats in dashboard", group = gA)
+learnOn   = input.bool(false, "Block buckets with negative expectancy", group = gA)
+learnMin  = input.int(25, "Min simulated trades before a bucket can be blocked", minval = 10, group = gA)
+fillBars  = input.int(20, "Cancel unfilled limit entry after (bars)", minval = 1, group = gA)
+
+gP = "HTF POI (unmitigated FVG)"
+showPOI = input.bool(true, "Show HTF FVG zones", group = gP)
+htfIn   = input.timeframe("60", "HTF timeframe", group = gP)
+maxZ    = input.int(5, "Max zones per side", minval = 1, maxval = 20, group = gP)
+reqPOI  = input.bool(false, "Require sweep to tap an HTF zone", group = gP)
+
+gV = "Style"
+bullCol  = input.color(#26a69a, "Bullish", group = gV)
+bearCol  = input.color(#ef5350, "Bearish", group = gV)
+bslCol   = input.color(#ff9800, "Buy-side liquidity (highs)", group = gV)
+sslCol   = input.color(#00bcd4, "Sell-side liquidity (lows)", group = gV)
+showDash = input.bool(true, "Show dashboard", group = gV)
+
+eqCol = color.yellow
+pdCol = color.gray
+asCol = color.purple
+
+// ============================================================================
+// STATE
+// ============================================================================
+var array<float>  lvP = array.new<float>()     // level price
+var array<int>    lvT = array.new<int>()       // 1 = buy-side (highs), -1 = sell-side (lows)
+var array<int>    lvB = array.new<int>()       // bar where price first closed beyond (-1 = intact)
+var array<string> lvK = array.new<string>()    // kind: Swing, EQH, EQL, PDH, PDL, Asia H, Asia L
+var array<line>   lvL = array.new<line>()
+var array<box>    bullZ = array.new<box>()     // HTF bullish FVG (support)
+var array<box>    bearZ = array.new<box>()     // HTF bearish FVG (resistance)
+var array<line>   stpLn = array.new<line>()
+var array<label>  stpLb = array.new<label>()
+var array<box>    stpBx = array.new<box>()
+var array<float>  vT    = array.new<float>()       // simulated trades, stride 8: side, entry, sl, tp, bar, filled, session, kind
+var array<int>    stN   = array.new<int>(7, 0)     // 0 all | 1 KZ1 | 2 KZ2 | 3 Asia | 4 PD | 5 EQ | 6 Swing
+var array<int>    stW   = array.new<int>(7, 0)
+var array<float>  vDay  = array.new<float>(2, 0.0) // simulated net R today, losses today
+
+var float  lastSH = na
+var float  prevSH = na
+var float  lastSL = na
+var float  prevSL = na
+var int    lastSHbar = na
+var int    lastSLbar = na
+var bool   shOpen = false
+var bool   slOpen = false
+var int    dir = 0
+var string phase = "-"
+var string lastEvt = "-"
+var string lastSig = "-"
+var string lastSkip = "-"
+var int    sigToday = 0
+
+var float asiaH = na
+var float asiaL = na
+var int   asiaStart = na
+
+var float bFvgTop = na
+var float bFvgBot = na
+var int   bFvgBar = na
+var float sFvgTop = na
+var float sFvgBot = na
+var int   sFvgBar = na
+
+var int   bullSwpBar = na
+var float bullSwpLow = na
+var bool  bullPOI = false
+var int   bearSwpBar = na
+var float bearSwpHigh = na
+var bool  bearPOI = false
+var string bullKnd = ""
+var string bearKnd = ""
+
+// ============================================================================
+// FUNCTIONS
+// ============================================================================
+addLevel(price, side, kind, x1, col, w) =>
+    if array.size(lvP) >= maxLvls
+        line.delete(array.get(lvL, 0))
+        array.shift(lvP)
+        array.shift(lvT)
+        array.shift(lvB)
+        array.shift(lvK)
+        array.shift(lvL)
+    line ln = line.new(x1, price, bar_index, price, color = col, width = w, style = line.style_dashed)
+    if not str.startswith(kind, "Swing")
+        label.new(x1, price, kind, style = label.style_label_down, color = color.new(col, 100), textcolor = col, size = size.tiny)
+    array.push(lvP, price)
+    array.push(lvT, side)
+    array.push(lvB, -1)
+    array.push(lvK, kind)
+    array.push(lvL, ln)
+    ln
+
+nearestLvl(side, px) =>
+    float best = na
+    int cnt = array.size(lvP)
+    if cnt > 0
+        for i = 0 to cnt - 1
+            float p = array.get(lvP, i)
+            if array.get(lvT, i) == side and array.get(lvB, i) == -1
+                if side == 1 and p > px and (na(best) or p < best)
+                    best := p
+                else if side == -1 and p < px and (na(best) or p > best)
+                    best := p
+    best
+
+hitBull(hi, lo) =>
+    bool res = false
+    int cnt = array.size(bullZ)
+    if cnt > 0
+        for i = 0 to cnt - 1
+            box bz = array.get(bullZ, i)
+            if hi >= box.get_bottom(bz) and lo <= box.get_top(bz)
+                res := true
+    res
+
+hitBear(hi, lo) =>
+    bool res = false
+    int cnt = array.size(bearZ)
+    if cnt > 0
+        for i = 0 to cnt - 1
+            box bz = array.get(bearZ, i)
+            if hi >= box.get_bottom(bz) and lo <= box.get_top(bz)
+                res := true
+    res
+
+clearSetup() =>
+    while array.size(stpLn) > 0
+        line.delete(array.pop(stpLn))
+    while array.size(stpLb) > 0
+        label.delete(array.pop(stpLb))
+    while array.size(stpBx) > 0
+        box.delete(array.pop(stpBx))
+    true
+
+drawSetup(isLong, entry, sl, tp1, tp2, zT, zB, zL, tag, rr1) =>
+    clearSetup()
+    color c = isLong ? bullCol : bearCol
+    int x2 = bar_index + 15
+    array.push(stpLn, line.new(bar_index, entry, x2, entry, color = color.blue, width = 1))
+    array.push(stpLn, line.new(bar_index, sl, x2, sl, color = color.red, width = 1))
+    array.push(stpLn, line.new(bar_index, tp2, x2, tp2, color = color.green, width = 1))
+    array.push(stpLb, label.new(x2, entry, "Entry (" + tag + ") " + str.tostring(entry, format.mintick), style = label.style_label_left, color = color.blue, textcolor = color.white, size = size.tiny))
+    array.push(stpLb, label.new(x2, sl, "SL " + str.tostring(sl, format.mintick), style = label.style_label_left, color = color.red, textcolor = color.white, size = size.tiny))
+    array.push(stpLb, label.new(x2, tp2, "TP2 " + str.tostring(tp2, format.mintick) + " (" + str.tostring(rrTarget, "#.#") + "R)", style = label.style_label_left, color = color.green, textcolor = color.white, size = size.tiny))
+    if not na(tp1)
+        array.push(stpLn, line.new(bar_index, tp1, x2, tp1, color = color.green, width = 1, style = line.style_dotted))
+        array.push(stpLb, label.new(x2, tp1, "TP1 liquidity " + str.tostring(tp1, format.mintick) + " (" + str.tostring(rr1, "#.#") + "R)", style = label.style_label_left, color = color.green, textcolor = color.white, size = size.tiny))
+    if not na(zT)
+        array.push(stpBx, box.new(zL, zT, x2, zB, border_color = color.new(c, 60), bgcolor = color.new(c, 85)))
+    true
+
+// ---- simulated outcome tracker (win = +rrTarget net of spread, loss = -1R) ----
+vRec(idx, win) =>
+    array.set(stN, idx, array.get(stN, idx) + 1)
+    if win
+        array.set(stW, idx, array.get(stW, idx) + 1)
+    true
+
+vAdd(side, en, sl, tp, bi, ses, knd) =>
+    array.push(vT, float(side))
+    array.push(vT, en)
+    array.push(vT, sl)
+    array.push(vT, tp)
+    array.push(vT, float(bi))
+    array.push(vT, 0.0)
+    array.push(vT, float(ses))
+    array.push(vT, float(knd))
+    true
+
+vResolve(hi, lo, bi) =>
+    int n = math.floor(array.size(vT) / 8)
+    if n > 0
+        for i = n - 1 to 0
+            int o = i * 8
+            int sd = int(array.get(vT, o))
+            float en = array.get(vT, o + 1)
+            float sl = array.get(vT, o + 2)
+            float tp = array.get(vT, o + 3)
+            bool stopped = sd == 1 ? lo <= sl : hi >= sl
+            bool target = sd == 1 ? hi >= tp : lo <= tp
+            bool touched = sd == 1 ? lo <= en : hi >= en
+            int res = 0
+            if array.get(vT, o + 5) == 0
+                if touched
+                    array.set(vT, o + 5, 1.0)
+                    res := stopped ? -1 : 0
+                else if target or bi - int(array.get(vT, o + 4)) > fillBars
+                    res := 2
+            else
+                res := stopped ? -1 : (target ? 1 : 0)
+            if res != 0
+                if res != 2
+                    bool win = res == 1
+                    vRec(0, win)
+                    vRec(1 + int(array.get(vT, o + 6)), win)
+                    vRec(3 + int(array.get(vT, o + 7)), win)
+                    array.set(vDay, 0, array.get(vDay, 0) + (win ? rrTarget : -1.0))
+                    if not win
+                        array.set(vDay, 1, array.get(vDay, 1) + 1.0)
+                for k = 1 to 8
+                    array.remove(vT, o)
+    true
+
+kindIdx(k) =>
+    str.startswith(k, "Asia") ? 0 : (str.startswith(k, "PD") ? 1 : (str.startswith(k, "EQ") ? 2 : 3))
+
+bucketNeg(idx) =>
+    int n = array.get(stN, idx)
+    int w = array.get(stW, idx)
+    n >= learnMin and (w * rrTarget - (n - w)) < 0
+
+statTxt(idx) =>
+    int n = array.get(stN, idx)
+    int w = array.get(stW, idx)
+    n == 0 ? "-" : str.tostring(n) + " | " + str.tostring(w * 100.0 / n, "#") + "% | " + str.tostring((w * rrTarget - (n - w)) / n, "#.##") + "R"
+
+
+// ============================================================================
+// CORE SERIES
+// ============================================================================
+atrV = ta.atr(14)
+rsiV = ta.rsi(close, 14)
+bc   = barstate.isconfirmed
+
+tAsia  = time(timeframe.period, asiaSess, tzIn)
+tLdn   = time(timeframe.period, ldnSess, tzIn)
+inAsia = timeframe.isintraday and not na(tAsia)
+inLdn  = timeframe.isintraday and not na(tLdn)
+
+tKZ1   = time(timeframe.period, kz1, kzTz)
+tKZ2   = time(timeframe.period, kz2, kzTz)
+kzNow  = timeframe.isintraday and (not na(tKZ1) or not na(tKZ2))
+inKZ   = not useKZ or not timeframe.isintraday or kzNow
+fxDay  = dayofmonth(time + 25200000, "America/New_York")
+newDay = nz(ta.change(fxDay)) != 0
+pipSz  = pipOvr > 0 ? pipOvr : (str.contains(syminfo.ticker, "JPY") ? 0.01 : (syminfo.mintick < 0.001 ? 0.0001 : syminfo.mintick))
+spr    = spreadPips * pipSz
+
+recentBar = time > last_bar_time - 86400000
+
+// previous forex day high / low from intraday bars (NY 17:00 roll, provider independent)
+var float dayH = na
+var float dayL = na
+var float pdh  = na
+var float pdl  = na
+bool dayRoll = false
+if newDay
+    if not na(dayH)
+        pdh := dayH
+        pdl := dayL
+        dayRoll := true
+    dayH := high
+    dayL := low
+else
+    dayH := na(dayH) ? high : math.max(dayH, high)
+    dayL := na(dayL) ? low : math.min(dayL, low)
+
+// HTF bias from the last closed HTF bar
+biasC = request.security(syminfo.tickerid, biasTf, close[1], lookahead = barmerge.lookahead_on)
+biasE = request.security(syminfo.tickerid, biasTf, ta.ema(close, biasLen)[1], lookahead = barmerge.lookahead_on)
+int bias = na(biasC) or na(biasE) ? 0 : (biasC > biasE ? 1 : -1)
+
+htfEff = timeframe.in_seconds(htfIn) >= timeframe.in_seconds(timeframe.period) ? htfIn : timeframe.period
+[hC1H, hC1L, hC3H, hC3L, hAtr] = request.security(syminfo.tickerid, htfEff, [high[3], low[3], high[1], low[1], ta.atr(14)[1]], lookahead = barmerge.lookahead_on)
+hTime = request.security(syminfo.tickerid, htfEff, time, lookahead = barmerge.lookahead_on)
+hChg  = ta.change(hTime)
+newHtf = bc and nz(hChg) != 0
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+
+// ============================================================================
+// ASIAN SESSION RANGE
+// ============================================================================
+asiaOpen  = inAsia and not inAsia[1]
+asiaClose = not inAsia and inAsia[1]
+if inAsia
+    if asiaOpen
+        asiaH := high
+        asiaL := low
+        asiaStart := bar_index
+    else
+        asiaH := math.max(asiaH, high)
+        asiaL := math.min(asiaL, low)
+
+// ============================================================================
+// LTF FAIR VALUE GAPS (used for the entry zone)
+// ============================================================================
+if bc
+    if low > high[2] and (low - high[2]) > atrV * fvgMin
+        bFvgTop := low
+        bFvgBot := high[2]
+        bFvgBar := bar_index
+    if high < low[2] and (low[2] - high) > atrV * fvgMin
+        sFvgTop := low[2]
+        sFvgBot := high
+        sFvgBar := bar_index
+
+// ============================================================================
+// HTF POI: unmitigated FVG zones
+// ============================================================================
+if bc and (showPOI or reqPOI)
+    if array.size(bullZ) > 0
+        for i = array.size(bullZ) - 1 to 0
+            box bz = array.get(bullZ, i)
+            if close < box.get_bottom(bz)
+                box.delete(bz)
+                array.remove(bullZ, i)
+            else
+                box.set_right(bz, bar_index)
+    if array.size(bearZ) > 0
+        for i = array.size(bearZ) - 1 to 0
+            box bz = array.get(bearZ, i)
+            if close > box.get_top(bz)
+                box.delete(bz)
+                array.remove(bearZ, i)
+            else
+                box.set_right(bz, bar_index)
+    if newHtf
+        if not na(hC3L) and not na(hC1H) and not na(hAtr) and hC3L > hC1H and (hC3L - hC1H) > hAtr * fvgMin
+            array.push(bullZ, box.new(bar_index, hC3L, bar_index + 1, hC1H, border_color = color.new(bullCol, 50), bgcolor = color.new(bullCol, 88)))
+            if array.size(bullZ) > maxZ
+                box.delete(array.shift(bullZ))
+        if not na(hC3H) and not na(hC1L) and not na(hAtr) and hC3H < hC1L and (hC1L - hC3H) > hAtr * fvgMin
+            array.push(bearZ, box.new(bar_index, hC1L, bar_index + 1, hC3H, border_color = color.new(bearCol, 50), bgcolor = color.new(bearCol, 88)))
+            if array.size(bearZ) > maxZ
+                box.delete(array.shift(bearZ))
+
+// ============================================================================
+// LIQUIDITY MAP: swing highs/lows, EQH/EQL, PDH/PDL, Asian high/low
+// ============================================================================
+bool newSH = bc and not na(ph)
+bool newSL = bc and not na(pl)
+
+if newSH
+    prevSH := lastSH
+    lastSH := ph
+    lastSHbar := bar_index - pivLen
+    shOpen := true
+    if showSw
+        bool isEq = false
+        int cnt = array.size(lvP)
+        if cnt > 0
+            for j = 0 to cnt - 1
+                string kj = array.get(lvK, j)
+                if array.get(lvT, j) == 1 and (str.startswith(kj, "Swing") or kj == "EQH") and math.abs(array.get(lvP, j) - ph) <= atrV * eqTol
+                    isEq := true
+                    array.set(lvK, j, "EQH")
+                    line.set_color(array.get(lvL, j), eqCol)
+        bool isOb = useRsi and rsiV[pivLen] >= 70
+        string kn = isEq ? "EQH" : (isOb ? "Swing OB" : "Swing")
+        addLevel(ph, 1, kn, bar_index - pivLen, isEq ? eqCol : bslCol, isOb ? 2 : 1)
+
+if newSL
+    prevSL := lastSL
+    lastSL := pl
+    lastSLbar := bar_index - pivLen
+    slOpen := true
+    if showSw
+        bool isEq = false
+        int cnt = array.size(lvP)
+        if cnt > 0
+            for j = 0 to cnt - 1
+                string kj = array.get(lvK, j)
+                if array.get(lvT, j) == -1 and (str.startswith(kj, "Swing") or kj == "EQL") and math.abs(array.get(lvP, j) - pl) <= atrV * eqTol
+                    isEq := true
+                    array.set(lvK, j, "EQL")
+                    line.set_color(array.get(lvL, j), eqCol)
+        bool isOs = useRsi and rsiV[pivLen] <= 30
+        string kn = isEq ? "EQL" : (isOs ? "Swing OS" : "Swing")
+        addLevel(pl, -1, kn, bar_index - pivLen, isEq ? eqCol : sslCol, isOs ? 2 : 1)
+
+bool newPD = bc and showDay and timeframe.isintraday and dayRoll
+if newPD
+    addLevel(pdh, 1, "PDH", bar_index, pdCol, 1)
+    addLevel(pdl, -1, "PDL", bar_index, pdCol, 1)
+
+if bc and showAsia and asiaClose and not na(asiaH) and not na(asiaStart)
+    addLevel(asiaH, 1, "Asia H", asiaStart, asCol, 1)
+    addLevel(asiaL, -1, "Asia L", asiaStart, asCol, 1)
+
+// ============================================================================
+// LIQUIDITY GRABS (wick through + close back inside, or close beyond then back inside)
+// ============================================================================
+bool bullGrab = false
+bool bearGrab = false
+bool bullKey = false
+bool bearKey = false
+string kindBull = ""
+string kindBear = ""
+
+if bc
+    int nL = array.size(lvP)
+    if nL > 0
+        for i = nL - 1 to 0
+            float p = array.get(lvP, i)
+            int sd = array.get(lvT, i)
+            int b0 = array.get(lvB, i)
+            string k = array.get(lvK, i)
+            line ln = array.get(lvL, i)
+            bool done = false
+            bool hit = false
+            if sd == 1
+                if b0 == -1
+                    if high > p
+                        if close < p
+                            hit := true
+                            done := true
+                        else if retBars > 0
+                            array.set(lvB, i, bar_index)
+                        else
+                            done := true
+                else if close < p
+                    hit := true
+                    done := true
+                else if bar_index - b0 >= retBars
+                    done := true
+            else
+                if b0 == -1
+                    if low < p
+                        if close > p
+                            hit := true
+                            done := true
+                        else if retBars > 0
+                            array.set(lvB, i, bar_index)
+                        else
+                            done := true
+                else if close > p
+                    hit := true
+                    done := true
+                else if bar_index - b0 >= retBars
+                    done := true
+            if hit
+                if sd == 1
+                    bearGrab := true
+                    if k != "Swing"
+                        bearKey := true
+                        kindBear := k
+                    else if not bearKey
+                        kindBear := k
+                else
+                    bullGrab := true
+                    if k != "Swing"
+                        bullKey := true
+                        kindBull := k
+                    else if not bullKey
+                        kindBull := k
+            line.set_x2(ln, bar_index)
+            if done
+                line.set_style(ln, line.style_dotted)
+                array.remove(lvP, i)
+                array.remove(lvT, i)
+                array.remove(lvB, i)
+                array.remove(lvK, i)
+                array.remove(lvL, i)
+
+string sessTxt = inLdn ? " | LDN" : (inAsia ? " | ASIA" : "")
+string trendTag = ((bearGrab and dir == -1) or (bullGrab and dir == 1)) ? " | with trend" : ""
+if showGrab and bearGrab and (not qualOnly or bearKey)
+    label.new(bar_index, high, "BSL grab: " + kindBear + sessTxt + trendTag, style = label.style_label_down, color = color.new(bearCol, 25), textcolor = color.white, size = size.tiny)
+if showGrab and bullGrab and (not qualOnly or bullKey)
+    label.new(bar_index, low, "SSL grab: " + kindBull + sessTxt + trendTag, style = label.style_label_up, color = color.new(bullCol, 25), textcolor = color.white, size = size.tiny)
+
+// ============================================================================
+// MARKET STRUCTURE: BOS / MSS (break must CLOSE beyond the swing)
+// ============================================================================
+bool brkUp = bc and shOpen and close > lastSH
+bool brkDn = bc and slOpen and close < lastSL
+bool mssUp = false
+bool mssDn = false
+bool bosUp = false
+bool bosDn = false
+
+if brkUp
+    bool isMss = dir == -1
+    mssUp := isMss
+    bosUp := not isMss
+    if showStr
+        line.new(lastSHbar, lastSH, bar_index, lastSH, color = bullCol, style = isMss ? line.style_solid : line.style_dotted, width = isMss ? 2 : 1)
+        label.new(math.round((lastSHbar + bar_index) / 2.0), lastSH, isMss ? "MSS" : "BOS", style = label.style_label_down, color = color.new(color.white, 100), textcolor = bullCol, size = size.tiny)
+    lastEvt := isMss ? "Bullish MSS" : "Bullish BOS"
+    shOpen := false
+    dir := 1
+
+if brkDn
+    bool isMss = dir == 1
+    mssDn := isMss
+    bosDn := not isMss
+    if showStr
+        line.new(lastSLbar, lastSL, bar_index, lastSL, color = bearCol, style = isMss ? line.style_solid : line.style_dotted, width = isMss ? 2 : 1)
+        label.new(math.round((lastSLbar + bar_index) / 2.0), lastSL, isMss ? "MSS" : "BOS", style = label.style_label_up, color = color.new(color.white, 100), textcolor = bearCol, size = size.tiny)
+    lastEvt := isMss ? "Bearish MSS" : "Bearish BOS"
+    slOpen := false
+    dir := -1
+
+// impulse -> correction -> continuation
+if mssUp or mssDn
+    phase := "Impulse (post-MSS)"
+else if bosUp or bosDn
+    phase := phase == "Correction" ? "Continuation" : "Impulse"
+else if (newSL and dir == 1) or (newSH and dir == -1)
+    phase := "Correction"
+
+// trend vs consolidation (HH+HL / LH+LL)
+bool hh = not na(prevSH) and lastSH > prevSH
+bool lh = not na(prevSH) and lastSH < prevSH
+bool hl = not na(prevSL) and lastSL > prevSL
+bool ll = not na(prevSL) and lastSL < prevSL
+string trend = (hh and hl and dir == 1) ? "Uptrend" : ((lh and ll and dir == -1) ? "Downtrend" : "Range / Consolidation")
+
+// ============================================================================
+// A+ SETUP: grab -> MSS -> FVG entry -> liquidity target
+// ============================================================================
+bool longSig = false
+bool shortSig = false
+
+if newDay
+    sigToday := 0
+    array.set(vDay, 0, 0.0)
+    array.set(vDay, 1, 0.0)
+
+if bc
+    vResolve(high, low, bar_index)
+
+float vNetR   = autoGuard ? array.get(vDay, 0) : 0.0
+float vLosses = autoGuard ? array.get(vDay, 1) : 0.0
+float effToday = math.max(todayLoss, math.max(0.0, -vNetR) * riskPct)
+float effLosses = math.max(float(lossToday), vLosses)
+bool guardStop = recentBar and (effLosses >= maxLossDay or effToday + riskPct >= dailyLim or totalLoss + riskPct >= maxLim)
+string guardWhy = effLosses >= maxLossDay ? "loss count" : (effToday + riskPct >= dailyLim ? "daily limit" : "max loss limit")
+
+if bullGrab and (not qualOnly or bullKey)
+    bool alive = not na(bullSwpBar) and bar_index - bullSwpBar <= setupBars
+    bullSwpLow := alive ? math.min(bullSwpLow, low) : low
+    bullPOI := hitBull(high, low) or (alive and bullPOI)
+    bullSwpBar := bar_index
+    bullKnd := kindBull
+
+if bearGrab and (not qualOnly or bearKey)
+    bool alive = not na(bearSwpBar) and bar_index - bearSwpBar <= setupBars
+    bearSwpHigh := alive ? math.max(bearSwpHigh, high) : high
+    bearPOI := hitBear(high, low) or (alive and bearPOI)
+    bearSwpBar := bar_index
+    bearKnd := kindBear
+
+bool longOK = brkUp and not na(bullSwpBar) and bar_index - bullSwpBar <= setupBars and (mssUp or sigMode == "MSS + BOS") and (not reqPOI or bullPOI)
+bool shortOK = brkDn and not na(bearSwpBar) and bar_index - bearSwpBar <= setupBars and (mssDn or sigMode == "MSS + BOS") and (not reqPOI or bearPOI)
+
+if longOK
+    float zT = na
+    float zB = na
+    int zL = na
+    if not na(bFvgBar) and bFvgBar >= bullSwpBar
+        zT := bFvgTop
+        zB := bFvgBot
+        zL := bFvgBar - 2
+    float entry = na(zT) ? lastSH : (zT + zB) / 2
+    entry := math.min(entry, close)
+    float sl = bullSwpLow - math.max(atrV * slBuf, pipSz * slPad)
+    float risk = entry - sl + spr
+    float riskP = risk / pipSz
+    int ses = not na(tKZ2) ? 1 : 0
+    int kIx = kindIdx(bullKnd)
+    if entry > sl
+        float tp1 = nearestLvl(1, entry)
+        float rr1 = na(tp1) ? rrTarget : (tp1 - entry - spr) / risk
+        string skip = ""
+        if not inKZ
+            skip := "outside kill zone"
+        else if sigToday >= maxPerDay
+            skip := "max signals per day"
+        else if riskLock and guardStop
+            skip := "risk guard: " + guardWhy
+        else if useBias and bias != 1
+            skip := "against HTF bias"
+        else if reqFvg and na(zT)
+            skip := "no FVG after sweep"
+        else if minDisp > 0 and close - open < atrV * minDisp
+            skip := "weak MSS candle"
+        else if riskP < minRiskPips
+            skip := "SL too tight " + str.tostring(riskP, "#.#") + "p"
+        else if riskP > maxRiskPips
+            skip := "SL too wide " + str.tostring(riskP, "#.#") + "p"
+        else if minRR > 0 and rr1 < minRR
+            skip := "RR to liquidity " + str.tostring(rr1, "#.#")
+        else if learnOn and (bucketNeg(1 + ses) or bucketNeg(3 + kIx))
+            skip := "learned: weak bucket"
+        if skip == ""
+            longSig := true
+            sigToday += 1
+            float tp2 = entry + risk * rrTarget + spr
+            float riskUsd = acctSize * riskPct / 100
+            float lots = math.floor(riskUsd / (risk * contract) * 100) / 100
+            vAdd(1, entry, sl, tp2, bar_index, ses, kIx)
+            string liqTxt = na(tp1) ? "no liquidity target" : "liq " + str.tostring(rr1, "#.#") + "R"
+            lastSig := "Long @ " + str.tostring(entry, format.mintick) + " | " + str.tostring(lots, "#.##") + " lot | " + str.tostring(riskP, "#.#") + "p"
+            label.new(bar_index, low, "LONG | " + (mssUp ? "MSS" : "BOS") + "\n" + str.tostring(lots, "#.##") + " lot | $" + str.tostring(math.round(riskUsd)) + " | " + str.tostring(riskP, "#.#") + "p\n" + liqTxt, style = label.style_label_up, color = bullCol, textcolor = color.white, size = size.small)
+            if showSetup
+                drawSetup(true, entry, sl, tp1, tp2, zT, zB, zL, na(zT) ? "retest" : "FVG CE", rr1)
+        else
+            lastSkip := "Long: " + skip
+    bullSwpBar := na
+
+if shortOK
+    float zT = na
+    float zB = na
+    int zL = na
+    if not na(sFvgBar) and sFvgBar >= bearSwpBar
+        zT := sFvgTop
+        zB := sFvgBot
+        zL := sFvgBar - 2
+    float entry = na(zT) ? lastSL : (zT + zB) / 2
+    entry := math.max(entry, close)
+    float sl = bearSwpHigh + math.max(atrV * slBuf, pipSz * slPad)
+    float risk = sl - entry + spr
+    float riskP = risk / pipSz
+    int ses = not na(tKZ2) ? 1 : 0
+    int kIx = kindIdx(bearKnd)
+    if sl > entry
+        float tp1 = nearestLvl(-1, entry)
+        float rr1 = na(tp1) ? rrTarget : (entry - tp1 - spr) / risk
+        string skip = ""
+        if not inKZ
+            skip := "outside kill zone"
+        else if sigToday >= maxPerDay
+            skip := "max signals per day"
+        else if riskLock and guardStop
+            skip := "risk guard: " + guardWhy
+        else if useBias and bias != -1
+            skip := "against HTF bias"
+        else if reqFvg and na(zT)
+            skip := "no FVG after sweep"
+        else if minDisp > 0 and open - close < atrV * minDisp
+            skip := "weak MSS candle"
+        else if riskP < minRiskPips
+            skip := "SL too tight " + str.tostring(riskP, "#.#") + "p"
+        else if riskP > maxRiskPips
+            skip := "SL too wide " + str.tostring(riskP, "#.#") + "p"
+        else if minRR > 0 and rr1 < minRR
+            skip := "RR to liquidity " + str.tostring(rr1, "#.#")
+        else if learnOn and (bucketNeg(1 + ses) or bucketNeg(3 + kIx))
+            skip := "learned: weak bucket"
+        if skip == ""
+            shortSig := true
+            sigToday += 1
+            float tp2 = entry - risk * rrTarget - spr
+            float riskUsd = acctSize * riskPct / 100
+            float lots = math.floor(riskUsd / (risk * contract) * 100) / 100
+            vAdd(-1, entry, sl, tp2, bar_index, ses, kIx)
+            string liqTxt = na(tp1) ? "no liquidity target" : "liq " + str.tostring(rr1, "#.#") + "R"
+            lastSig := "Short @ " + str.tostring(entry, format.mintick) + " | " + str.tostring(lots, "#.##") + " lot | " + str.tostring(riskP, "#.#") + "p"
+            label.new(bar_index, high, "SHORT | " + (mssDn ? "MSS" : "BOS") + "\n" + str.tostring(lots, "#.##") + " lot | $" + str.tostring(math.round(riskUsd)) + " | " + str.tostring(riskP, "#.#") + "p\n" + liqTxt, style = label.style_label_down, color = bearCol, textcolor = color.white, size = size.small)
+            if showSetup
+                drawSetup(false, entry, sl, tp1, tp2, zT, zB, zL, na(zT) ? "retest" : "FVG CE", rr1)
+        else
+            lastSkip := "Short: " + skip
+    bearSwpBar := na
+
+// ============================================================================
+// CANDLE-BASED PULLBACKS (optional)
+// ============================================================================
+bullImp = high > high[1] and low >= low[1]
+bearImp = low < low[1] and high <= high[1]
+bullPB = showPB and bc and dir == 1 and low < low[1] and bullImp[1]
+bearPB = showPB and bc and dir == -1 and high > high[1] and bearImp[1]
+plotshape(bullPB, "Bullish pullback", style = shape.circle, location = location.belowbar, color = color.new(bullCol, 30), size = size.tiny)
+plotshape(bearPB, "Bearish pullback", style = shape.circle, location = location.abovebar, color = color.new(bearCol, 30), size = size.tiny)
+bgcolor(showAsia and inAsia ? color.new(color.gray, 93) : na, title = "Asian session")
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 18, bgcolor = color.new(color.black, 15), border_color = color.new(color.gray, 70), border_width = 1)
+if showDash and barstate.islast
+    color trCol = trend == "Uptrend" ? bullCol : (trend == "Downtrend" ? bearCol : color.orange)
+    float nBsl = nearestLvl(1, close)
+    float nSsl = nearestLvl(-1, close)
+    string sessNow = (inAsia ? "Asia" : (inLdn ? "London" : "-")) + (kzNow ? " | KZ" : "")
+    table.cell(dash, 0, 0, "Trend", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 0, trend, text_color = trCol, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 1, "Phase", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 1, phase, text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 2, "Last event", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 2, lastEvt, text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 3, "Session", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 3, sessNow, text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 4, "Next BSL (up)", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 4, na(nBsl) ? "-" : str.tostring(nBsl, format.mintick), text_color = bslCol, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 5, "Next SSL (down)", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 5, na(nSsl) ? "-" : str.tostring(nSsl, format.mintick), text_color = sslCol, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 6, "HTF zones", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 6, str.tostring(array.size(bullZ)) + " bull / " + str.tostring(array.size(bearZ)) + " bear", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 7, "Last setup", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 7, lastSig, text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    string guardTxt = (guardStop ? "STOP (" + guardWhy + ")" : "OK") + " | room " + str.tostring(dailyLim - effToday, "#.##") + "% / " + str.tostring(maxLim - totalLoss, "#.##") + "%"
+    table.cell(dash, 0, 8, "Guard (day / max)", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 8, guardTxt, text_color = guardStop ? color.red : color.lime, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 0, 9, "Last skip", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 9, lastSkip, text_color = color.orange, text_halign = text.align_left, text_size = size.small)
+    string biasTxt = not useBias ? "off" : (bias == 1 ? "Bullish (longs only)" : (bias == -1 ? "Bearish (shorts only)" : "-"))
+    table.cell(dash, 0, 10, "HTF bias", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, 10, biasTxt, text_color = bias == 1 ? bullCol : (bias == -1 ? bearCol : color.gray), text_halign = text.align_left, text_size = size.small)
+    if showStats
+        array<string> stLbl = array.from("Sim all (n|win|avgR)", "Sim KZ1 London", "Sim KZ2 New York", "Sim Asia levels", "Sim PDH / PDL", "Sim EQH / EQL", "Sim Swings")
+        for i = 0 to 6
+            table.cell(dash, 0, 11 + i, array.get(stLbl, i), text_color = color.silver, text_halign = text.align_left, text_size = size.tiny)
+            table.cell(dash, 1, 11 + i, statTxt(i), text_color = color.silver, text_halign = text.align_left, text_size = size.tiny)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(longSig, "LSMS Long setup", "Sell-side liquidity grab + bullish structure break: long setup")
+alertcondition(shortSig, "LSMS Short setup", "Buy-side liquidity grab + bearish structure break: short setup")
+alertcondition(bullGrab, "LSMS Sell-side grab", "Sell-side liquidity grabbed (bullish reaction expected)")
+alertcondition(bearGrab, "LSMS Buy-side grab", "Buy-side liquidity grabbed (bearish reaction expected)")
+alertcondition(mssUp, "LSMS Bullish MSS", "Bullish market structure shift")
+alertcondition(mssDn, "LSMS Bearish MSS", "Bearish market structure shift")
