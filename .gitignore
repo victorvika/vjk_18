@@ -1,0 +1,10 @@
+# Build output
+*.apk
+*.aab
+app/build/
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+release/

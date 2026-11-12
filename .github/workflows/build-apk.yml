@@ -1,0 +1,86 @@
+name: Build GoldPulse APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [arena/1f2e083e-vjk-18]
+    paths:
+      - "app/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Install Android SDK 35
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Run strategy unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Build APK (debug-signed = install-ready)
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Prepare release file
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/GoldPulse.apk
+          ls -lh release/
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldPulse-APK
+          path: release/*.apk
+          retention-days: 90
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: goldpulse-v1.0.${{ github.run_number }}
+          name: "GoldPulse v1.0.${{ github.run_number }}"
+          body: |
+            **GoldPulse** — GC / MGC gold futures analysis for FundedNext Futures.
+
+            **Install**
+            1. Download `GoldPulse.apk` below.
+            2. On the phone allow "Install unknown apps" for your browser/file manager.
+            3. Open the app — it loads market data automatically (no login, no key).
+
+            **What it does**
+            - Candlestick chart for GC / MGC, 1m to 1D
+            - LSMS engine: liquidity sweep -> structure break -> FVG entry -> liquidity target
+            - Liquidity map: swing highs/lows, EQH/EQL, PDH/PDL, Asian range
+            - Position sizing in contracts for GC ($100/pt) and MGC ($10/pt)
+            - Prop-firm guard: daily loss limit, max loss limit, losing-trade stop
+            - "Losses left" against the $2,000 MLL
+
+            **Data**
+            Phase 1 uses Yahoo Finance (`GC=F`, ~10 min delayed). Phase 2 will use the
+            Tradovate API from your FundedNext account for real-time CME data.
+
+            **Not a signal service.** The app shows the setup the rules produce and the
+            size your risk plan allows. Entries are still yours to place on Tradovate.
+          files: release/*.apk
