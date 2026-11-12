@@ -37,11 +37,41 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Run strategy unit tests
-        run: gradle :app:testDebugUnitTest --stacktrace
+      # Unit tests + assemble in one invocation so a compile error is reported once.
+      - name: Build and test
+        id: gradle
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace --console=plain 2>&1 | tee build.log
 
-      - name: Build APK (debug-signed = install-ready)
-        run: gradle :app:assembleDebug --stacktrace
+      # CI logs are not always retrievable, so publish the failure onto the commit.
+      - name: Report failure to commit
+        if: steps.gradle.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Gradle failure"
+            echo '```'
+            grep -E "e: file|error:|FAILED|Execution failed|Caused by|> Task .* FAILED|^\s+> " build.log \
+              | head -120 || true
+            echo '```'
+            echo
+            echo "<details><summary>tail</summary>"
+            echo
+            echo '```'
+            tail -150 build.log
+            echo '```'
+            echo "</details>"
+          } > report.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+            -f body="$(cat report.md)" > /dev/null || true
+          echo "Posted failure report to commit ${{ github.sha }}"
+
+      - name: Fail if build failed
+        if: steps.gradle.outcome == 'failure'
+        run: exit 1
 
       - name: Prepare release file
         run: |
@@ -66,16 +96,16 @@ jobs:
 
             **Install**
             1. Download `GoldPulse.apk` below.
-            2. On the phone allow "Install unknown apps" for your browser/file manager.
-            3. Open the app — it loads market data automatically (no login, no key).
+            2. On the phone allow "Install unknown apps" for your browser or file manager.
+            3. Open the app — market data loads automatically (no login, no API key).
 
             **What it does**
             - Candlestick chart for GC / MGC, 1m to 1D
             - LSMS engine: liquidity sweep -> structure break -> FVG entry -> liquidity target
             - Liquidity map: swing highs/lows, EQH/EQL, PDH/PDL, Asian range
-            - Position sizing in contracts for GC ($100/pt) and MGC ($10/pt)
+            - Contract sizing for GC ($100/pt) and MGC ($10/pt), with a micro fallback
             - Prop-firm guard: daily loss limit, max loss limit, losing-trade stop
-            - "Losses left" against the $2,000 MLL
+            - "Losses left" against the $2,000 max loss limit
 
             **Data**
             Phase 1 uses Yahoo Finance (`GC=F`, ~10 min delayed). Phase 2 will use the
