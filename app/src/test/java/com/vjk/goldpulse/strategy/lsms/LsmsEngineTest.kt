@@ -152,9 +152,11 @@ class LsmsEngineTest {
         val nextMorning = NewYorkClock.dayIndex(at(11, 2, 0))
         assertEquals("midnight is inside the same trading day", lateEvening, nextMorning)
 
-        // The following afternoon belongs to the next session.
-        val nextAfternoon = NewYorkClock.dayIndex(at(11, 16, 0))
-        assertEquals("the next afternoon is a new session", lateEvening + 1, nextAfternoon)
+        // 16:00 the next day is STILL the same session: the session that opened at
+        // 17:00 on the 10th runs through to 17:00 on the 11th.
+        assertEquals("16:00 next day is the same session", lateEvening, NewYorkClock.dayIndex(at(11, 16, 0)))
+        // Only the next 17:00 roll starts a new one.
+        assertEquals("17:30 next day is a new session", lateEvening + 1, NewYorkClock.dayIndex(at(11, 17, 30)))
     }
 
     @Test
