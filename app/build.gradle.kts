@@ -63,4 +63,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
+
+    // org.json is part of the Android framework, so it is only a stub in the unit-test
+    // JVM. This brings the real implementation in for tests only.
+    testImplementation("org.json:json:20240303")
 }
