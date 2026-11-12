@@ -250,18 +250,28 @@ def main():
     checks.append(("Rapid Daily 50K affords 8 losses at 0.5% risk", int(mll // risk) == 8))
 
     # ---- write golden vectors --------------------------------------------
+    # IMPORTANT: expectations must be computed on EXACTLY the bars we ship, not on a
+    # longer series. Computing "last value" on 400 bars while embedding 120 produces
+    # golden vectors that no correct implementation can satisfy.
+    embedded = bars[:120]
+    e_close = [b["close"] for b in embedded]
+    e_high = [b["high"] for b in embedded]
+    e_low = [b["low"] for b in embedded]
+    e_atr = atr(e_high, e_low, e_close, 14)
+    e_rsi = rsi(e_close, 14)
+
     golden = {
-        "source": "synthetic gold walk, seed 7, 400 bars, 1m",
+        "source": "synthetic gold walk, seed 7, 1m bars (expectations on all embedded bars)",
         "instrument": {"symbol": "GC", "tickSize": 0.1, "pointValue": 100.0},
-        "bars": bars[:120],
+        "bars": embedded,
         "expected": {
-            "sma20_last": sma(close, 20)[-1],
-            "ema20_last": ema(close, 20)[-1],
-            "rma14_last": rma(close, 14)[-1],
-            "rsi14_last": rsi(close, 14)[-1],
-            "atr14_last": a[-1],
-            "rsi14_series_tail": rsi(close, 14)[-10:],
-            "atr14_series_tail": a[-10:],
+            "sma20_last": sma(e_close, 20)[-1],
+            "ema20_last": ema(e_close, 20)[-1],
+            "rma14_last": rma(e_close, 14)[-1],
+            "rsi14_last": e_rsi[-1],
+            "atr14_last": e_atr[-1],
+            "rsi14_series_tail": e_rsi[-10:],
+            "atr14_series_tail": e_atr[-10:],
         },
         "notes": [
             "Pine ta.sma/ema/rma all seed with an SMA of the first `length` values.",

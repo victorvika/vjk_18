@@ -104,15 +104,16 @@ class SeriesParityTest {
         2704.4, 2703.7, 2701.2, 2698.9, 2699.9, 2702.1, 2701.1, 2702.0,
     )
 
-    // Expected values from validation/golden_vectors.json
-    private val expectedSma20 = 2698.470000000
-    private val expectedEma20 = 2697.878135842
-    private val expectedRma14 = 2696.402656092
-    private val expectedRsi14 = 53.737754098
-    private val expectedAtr14 = 2.773309773
+    // Expected values from validation/golden_vectors.json.
+    // Regenerate with: python3 validation/parity_check.py
+    private val expectedSma20 = 2695.155000000
+    private val expectedEma20 = 2695.410974297
+    private val expectedRma14 = 2692.482026297
+    private val expectedRsi14 = 70.524560540
+    private val expectedAtr14 = 2.998048997
 
-    private val expectedRsiTail = doubleArrayOf(66.010708069, 62.179547274, 64.229023599, 61.302005725, 60.969538273, 65.413664307, 67.917152904, 62.044307411, 53.037877120, 53.737754098)
-    private val expectedAtrTail = doubleArrayOf(2.925698983, 2.859577627, 2.912464940, 2.868717444, 2.763809055, 2.752108408, 2.691243522, 2.634726128, 2.825102833, 2.773309773)
+    private val expectedRsiTail = doubleArrayOf(80.421700094, 81.884094587, 84.619065230, 82.386610338, 74.796907642, 68.540990128, 69.726556945, 72.208020128, 69.422487853, 70.524560540)
+    private val expectedAtrTail = doubleArrayOf(2.987417026, 3.059744381, 3.248334068, 3.116310206, 3.115145192, 3.199777678, 3.099793558, 3.149808304, 3.074821997, 2.998048997)
 
     @Test
     fun `GC and MGC tick values are correct`() {
