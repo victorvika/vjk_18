@@ -54,8 +54,14 @@ jobs:
           {
             echo "### Gradle failure"
             echo '```'
-            grep -E "e: file|error:|FAILED|Execution failed|Caused by|> Task .* FAILED|^\s+> " build.log \
-              | head -120 || true
+            # Assertion text lives in the XML/HTML reports, not the console.
+            if [ -d app/build/test-results/testDebugUnitTest ]; then
+              echo "## Test failures"
+              grep -h -A6 "<failure" app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -100 || true
+              echo
+            fi
+            echo "## Compiler / task errors"
+            grep -E "e: file|error:|FAILED|Execution failed" build.log | head -60 || true
             echo '```'
             echo
             echo "<details><summary>tail</summary>"
