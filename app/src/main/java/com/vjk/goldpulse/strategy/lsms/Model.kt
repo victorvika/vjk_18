@@ -105,17 +105,19 @@ data class Setup(
 )
 
 /** Why a setup candidate was rejected — surfaced in the dashboard. */
-sealed interface SkipReason {
-    data object OutsideKillZone : SkipReason
-    data object MaxSignalsPerDay : SkipReason
-    data class RiskGuard(val why: GuardReason) : SkipReason
-    data object AgainstHtfBias : SkipReason
-    data object NoFvgAfterSweep : SkipReason
-    data object WeakDisplacement : SkipReason
-    data class StopTooTight(val points: Double) : SkipReason
-    data class StopTooWide(val points: Double) : SkipReason
-    data class RrTooLiquidity(val rr: Double) : SkipReason
-    data object NegativeBucket : SkipReason
+sealed class SkipReason {
+    data object OutsideKillZone : SkipReason()
+    data object MaxSignalsPerDay : SkipReason()
+    data class RiskGuard(val why: GuardReason) : SkipReason()
+    data object AgainstHtfBias : SkipReason()
+    data object NoFvgAfterSweep : SkipReason()
+    data object WeakDisplacement : SkipReason()
+    data class StopTooTight(val points: Double) : SkipReason()
+    data class StopTooWide(val points: Double) : SkipReason()
+    data class RrTooLiquidity(val rr: Double) : SkipReason()
+    data object NegativeBucket : SkipReason()
+
+    // A sealed CLASS may override toString (an interface cannot).
     override fun toString(): String = when (this) {
         OutsideKillZone -> "outside kill zone"
         MaxSignalsPerDay -> "max signals per day"

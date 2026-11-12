@@ -453,6 +453,8 @@ class LsmsEngine(
                             bias = bias, signalsToday = signalsToday,
                             guardStopped = guardStopped, guardReason = guardReason,
                             nearestLiquidity = nearestAbove(levels, s.close[i]),
+                            costPrice = costPrice,
+                            stopBufferPrice = stopBufferPrice,
                         )) {
                             is SetupOutcome.Accepted -> {
                                 adopt(outcome.setup, setups, simTrades)
@@ -479,6 +481,8 @@ class LsmsEngine(
                             bias = bias, signalsToday = signalsToday,
                             guardStopped = guardStopped, guardReason = guardReason,
                             nearestLiquidity = nearestBelow(levels, s.close[i]),
+                            costPrice = costPrice,
+                            stopBufferPrice = stopBufferPrice,
                         )) {
                             is SetupOutcome.Accepted -> {
                                 adopt(outcome.setup, setups, simTrades)
@@ -538,6 +542,8 @@ class LsmsEngine(
         guardStopped: Boolean,
         guardReason: GuardReason?,
         nearestLiquidity: Double,
+        costPrice: Double,
+        stopBufferPrice: Double,
     ): SetupOutcome {
         // Entry: FVG consequent encroachment (midpoint) if the gap formed after the
         // sweep, otherwise a retest of the broken swing.
