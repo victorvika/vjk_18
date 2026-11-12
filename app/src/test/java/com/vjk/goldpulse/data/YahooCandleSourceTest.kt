@@ -92,10 +92,27 @@ class YahooCandleSourceTest {
     }
 
     @Test
-    fun `null result yields no candles`() {
-        // Yahoo returns this for a bad symbol.
-        val nullResult = """{"chart":{"result":null,"error":{"code":"Not Found"}}}"""
+    fun `a null result without an error yields no candles`() {
+        val nullResult = """{"chart":{"result":null,"error":null}}"""
         assertTrue(source.parseCandles(nullResult).isEmpty())
+    }
+
+    @Test
+    fun `an error object is surfaced as an exception`() {
+        // This is what Yahoo actually returns for an unknown symbol, and the message
+        // must reach the UI rather than silently rendering an empty chart.
+        val badSymbol = """{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found, symbol may be delisted"}}}"""
+        val ex = try {
+            source.parseCandles(badSymbol)
+            null
+        } catch (e: java.io.IOException) {
+            e
+        }
+        assertNotNull("an error payload must throw", ex)
+        assertTrue(
+            "the description must survive to the message: ${ex!!.message}",
+            ex.message!!.contains("No data found"),
+        )
     }
 
     @Test
