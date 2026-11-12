@@ -88,6 +88,14 @@ jobs:
           {
             echo "### APK verification"
             echo
+            if [ -d app/build/test-results/testDebugUnitTest ]; then
+              T=$(grep -h -o 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | paste -sd+ | bc)
+              F=$(grep -h -o 'failures="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | paste -sd+ | bc)
+              E=$(grep -h -o 'errors="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | paste -sd+ | bc)
+              echo "**Unit tests:** ${T:-0} run, ${F:-0} failed, ${E:-0} errors"
+              echo
+            fi
+            echo
             echo "**Size:** $(stat -c%s "$APK") bytes"
             echo
             echo "#### Badging"
