@@ -96,8 +96,11 @@ class YahooCandleSource(
     fun parseCandles(body: String): List<Candle> {
         val root = JSONObject(body)
         val chart = root.optJSONObject("chart") ?: return emptyList()
-        if (chart.optJSONObject("error") != null && !chart.isNull("error")) {
-            throw IOException("Yahoo error: ${chart.optJSONObject("error")?.optString("description")}")
+        // `error` is JSON null on success and an OBJECT on failure. optJSONObject
+        // returns null for both, so test for the object explicitly and only then throw.
+        if (!chart.isNull("error")) {
+            val err = chart.optJSONObject("error")
+            throw IOException("Yahoo error: ${err?.optString("description").orEmpty()}")
         }
         val results = chart.optJSONArray("result") ?: return emptyList()
         if (results.length() == 0) return emptyList()
