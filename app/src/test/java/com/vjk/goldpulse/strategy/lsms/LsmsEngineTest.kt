@@ -134,22 +134,27 @@ class LsmsEngineTest {
     @Test
     fun `day index rolls at 17 New York not at midnight`() {
         val et = TimeZone.getTimeZone("America/New_York")
-        fun at(hour: Int, minute: Int): Long {
+        fun at(day: Int, hour: Int, minute: Int): Long {
             val c = GregorianCalendar(et).apply {
-                set(2026, Calendar.JUNE, 10, hour, minute, 0)
+                set(2026, Calendar.JUNE, day, hour, minute, 0)
                 set(Calendar.MILLISECOND, 0)
             }
             return c.timeInMillis
         }
 
-        val beforeRoll = NewYorkClock.dayIndex(at(16, 59))
-        val afterRoll = NewYorkClock.dayIndex(at(17, 1))
+        val beforeRoll = NewYorkClock.dayIndex(at(10, 16, 59))
+        val afterRoll = NewYorkClock.dayIndex(at(10, 17, 1))
         assertEquals("a new trading day starts at 17:00 ET", beforeRoll + 1, afterRoll)
 
-        // Midnight must NOT start a new trading day.
-        val lateEvening = NewYorkClock.dayIndex(at(23, 0))
-        val nextMorning = NewYorkClock.dayIndex(at(2, 0))
+        // Midnight must NOT start a new trading day: 23:00 on the 10th and 02:00 on
+        // the 11th are the same session, because the session began at 17:00 on the 10th.
+        val lateEvening = NewYorkClock.dayIndex(at(10, 23, 0))
+        val nextMorning = NewYorkClock.dayIndex(at(11, 2, 0))
         assertEquals("midnight is inside the same trading day", lateEvening, nextMorning)
+
+        // The following afternoon belongs to the next session.
+        val nextAfternoon = NewYorkClock.dayIndex(at(11, 16, 0))
+        assertEquals("the next afternoon is a new session", lateEvening + 1, nextAfternoon)
     }
 
     @Test
