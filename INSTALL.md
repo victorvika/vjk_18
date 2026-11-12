@@ -2,9 +2,9 @@
 
 ## Download
 
-**Direct APK:** https://github.com/victorvika/vjk_18/releases/download/goldpulse-v1.0.13/GoldPulse.apk
+**Direct APK:** https://github.com/victorvika/vjk_18/releases/download/goldpulse-v1.0.16/GoldPulse.apk
 
-Release page: https://github.com/victorvika/vjk_18/releases/tag/goldpulse-v1.0.13
+Release page: https://github.com/victorvika/vjk_18/releases/tag/goldpulse-v1.0.16
 
 | | |
 |---|---|

@@ -6,7 +6,7 @@ Built to replace a TradingView subscription for the parts that matter on a prop
 account: the chart, the liquidity map, and — most importantly — the position sizing
 and the drawdown guard.
 
-**Download:** https://github.com/victorvika/vjk_18/releases/download/goldpulse-v1.0.13/GoldPulse.apk
+**Download:** https://github.com/victorvika/vjk_18/releases/download/goldpulse-v1.0.16/GoldPulse.apk
 **Install guide:** [INSTALL.md](INSTALL.md)
 
 ## What it does
