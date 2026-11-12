@@ -79,6 +79,52 @@ jobs:
         if: steps.gradle.outcome == 'failure'
         run: exit 1
 
+      - name: Verify the APK is installable
+        id: verify
+        run: |
+          set -o pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          {
+            echo "### APK verification"
+            echo
+            echo "**Size:** $(stat -c%s "$APK") bytes"
+            echo
+            echo "#### Badging"
+            echo '```'
+            "$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -E "^(package|application-label|launchable-activity|sdkVersion|targetSdkVersion|uses-permission)" | head -20
+            echo '```'
+            echo
+            echo "#### Signature"
+            echo '```'
+            "$BT/apksigner" verify --verbose "$APK" 2>&1 | head -15
+            echo '```'
+            echo
+            echo "#### Contents"
+            echo '```'
+            unzip -l "$APK" | grep -E "classes.*dex|resources.arsc|AndroidManifest|lib/" | head -12
+            echo '```'
+            echo
+            echo "#### DEX class check"
+            echo '```'
+            for c in "Lcom/vjk/goldpulse/MainActivity;"                      "Lcom/vjk/goldpulse/strategy/lsms/LsmsEngine;"                      "Lcom/vjk/goldpulse/strategy/lsms/Instrument;"                      "Lcom/vjk/goldpulse/strategy/lsms/Sizing;"                      "Lcom/vjk/goldpulse/data/YahooCandleSource;"; do
+              if "$BT/dexdump" -f "$APK" 2>/dev/null | grep -q "Class descriptor.*$c"; then
+                echo "FOUND    $c"
+              else
+                echo "MISSING  $c"
+              fi
+            done
+            echo '```'
+          } > apk-verify.md
+          cat apk-verify.md
+
+      - name: Report APK verification to commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments"             -f body="$(cat apk-verify.md)" > /dev/null || true
+
       - name: Prepare release file
         run: |
           mkdir -p release
