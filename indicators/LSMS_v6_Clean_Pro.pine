@@ -337,23 +337,22 @@ drawSetup(isLong, entry, sl, tp1, tp2, zT, zB, zL, tag, rr1, isBlocked, whyTxt) 
     color eCol = isBlocked ? color.gray : color.blue
     color sCol = isBlocked ? color.new(color.gray, 20) : color.red
     color tCol = isBlocked ? color.new(color.gray, 20) : color.green
-    int labSz = size.small
     // risk (entry->SL) and reward (entry->TP2) shading
     array.push(stpBx, box.new(bar_index, math.max(entry, sl), x2, math.min(entry, sl), border_color = color.new(sCol, 100), bgcolor = color.new(color.red, isBlocked ? 96 : 88)))
     array.push(stpBx, box.new(bar_index, math.max(entry, tp2), x2, math.min(entry, tp2), border_color = color.new(tCol, 100), bgcolor = color.new(color.green, isBlocked ? 96 : 92)))
     array.push(stpLn, line.new(bar_index, entry, x2, entry, color = eCol, width = 2))
     array.push(stpLn, line.new(bar_index, sl, x2, sl, color = sCol, width = 2))
     array.push(stpLn, line.new(bar_index, tp2, x2, tp2, color = tCol, width = 2))
-    array.push(stpLb, label.new(x2, entry, "Entry (" + tag + ") " + str.tostring(entry, format.mintick), style = label.style_label_left, color = eCol, textcolor = color.white, size = labSz))
-    array.push(stpLb, label.new(x2, sl, "SL " + str.tostring(sl, format.mintick), style = label.style_label_left, color = sCol, textcolor = color.white, size = labSz))
-    array.push(stpLb, label.new(x2, tp2, "TP2 " + str.tostring(tp2, format.mintick) + " (" + str.tostring(rrTarget, "#.#") + "R)", style = label.style_label_left, color = tCol, textcolor = color.white, size = labSz))
+    array.push(stpLb, label.new(x2, entry, "Entry (" + tag + ") " + str.tostring(entry, format.mintick), style = label.style_label_left, color = eCol, textcolor = color.white, size = size.small))
+    array.push(stpLb, label.new(x2, sl, "SL " + str.tostring(sl, format.mintick), style = label.style_label_left, color = sCol, textcolor = color.white, size = size.small))
+    array.push(stpLb, label.new(x2, tp2, "TP2 " + str.tostring(tp2, format.mintick) + " (" + str.tostring(rrTarget, "#.#") + "R)", style = label.style_label_left, color = tCol, textcolor = color.white, size = size.small))
     if not na(tp1)
         array.push(stpLn, line.new(bar_index, tp1, x2, tp1, color = tCol, width = 1, style = line.style_dotted))
-        array.push(stpLb, label.new(x2, tp1, "TP1 liquidity " + str.tostring(tp1, format.mintick) + " (" + str.tostring(rr1, "#.#") + "R)", style = label.style_label_left, color = tCol, textcolor = color.white, size = labSz))
+        array.push(stpLb, label.new(x2, tp1, "TP1 liquidity " + str.tostring(tp1, format.mintick) + " (" + str.tostring(rr1, "#.#") + "R)", style = label.style_label_left, color = tCol, textcolor = color.white, size = size.small))
     if not na(zT)
         array.push(stpBx, box.new(zL, zT, x2, zB, border_color = color.new(c, 60), bgcolor = color.new(c, 85)))
     if isBlocked
-        array.push(stpLb, label.new(bar_index, entry, "BLOCKED - NO TRADE\n" + whyTxt, style = isLong ? label.style_label_down : label.style_label_up, color = color.gray, textcolor = color.white, size = labSz))
+        array.push(stpLb, label.new(bar_index, entry, "BLOCKED - NO TRADE\n" + whyTxt, style = isLong ? label.style_label_down : label.style_label_up, color = color.gray, textcolor = color.white, size = size.small))
     true
 
 // ---- simulated outcome tracker (win = +rrTarget net of spread, loss = -1R) ----
